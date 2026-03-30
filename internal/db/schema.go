@@ -224,21 +224,27 @@ func CreateIndexes(ctx context.Context, db *sql.DB) error {
 
 func ApplyBuildPragmas(ctx context.Context, db *sql.DB) error {
 	for _, stmt := range buildPragmas {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return err
+		if err := execPragma(ctx, db, stmt); err != nil {
+			return fmt.Errorf("failed to execute query %s: %w", stmt, err)
 		}
 	}
 	return nil
 }
 
 func Finalize(ctx context.Context, db *sql.DB) error {
-	for _, stmt := range []string{
-		`PRAGMA optimize;`,
-		`VACUUM;`,
-	} {
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return err
-		}
+	if err := execPragma(ctx, db, `PRAGMA optimize;`); err != nil {
+		return fmt.Errorf("failed to execute query PRAGMA optimize;: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `VACUUM;`); err != nil {
+		return fmt.Errorf("failed to execute query VACUUM;: %w", err)
 	}
 	return nil
+}
+
+func execPragma(ctx context.Context, db *sql.DB, stmt string) error {
+	rows, err := db.QueryContext(ctx, stmt)
+	if err != nil {
+		return err
+	}
+	return rows.Close()
 }
