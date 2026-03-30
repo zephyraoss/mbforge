@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/ulikunitz/xz"
 
@@ -142,9 +143,7 @@ func MergeDumpMetadata(dst *model.DumpMetadata, src model.DumpMetadata) error {
 	if err := mergeMetaField("json_schema_number", &dst.JSONSchemaNumber, src.JSONSchemaNumber); err != nil {
 		return err
 	}
-	if err := mergeMetaField("dump_timestamp", &dst.DumpTimestamp, src.DumpTimestamp); err != nil {
-		return err
-	}
+	dst.DumpTimestamp = mergeDumpTimestamp(dst.DumpTimestamp, src.DumpTimestamp)
 	return nil
 }
 
@@ -160,6 +159,44 @@ func mergeMetaField(name string, dst *string, src string) error {
 		return fmt.Errorf("dump metadata mismatch for %s: %q != %q", name, *dst, src)
 	}
 	return nil
+}
+
+func mergeDumpTimestamp(current, incoming string) string {
+	if incoming == "" {
+		return current
+	}
+	if current == "" {
+		return incoming
+	}
+
+	currentTime, currentOK := parseDumpTimestamp(current)
+	incomingTime, incomingOK := parseDumpTimestamp(incoming)
+	switch {
+	case currentOK && incomingOK:
+		if incomingTime.After(currentTime) {
+			return incoming
+		}
+		return current
+	case incoming > current:
+		return incoming
+	default:
+		return current
+	}
+}
+
+func parseDumpTimestamp(value string) (time.Time, bool) {
+	layouts := []string{
+		"2006-01-02 15:04:05.999999999-07",
+		"2006-01-02 15:04:05.999999-07",
+		"2006-01-02 15:04:05-07",
+	}
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func scanTarLines(ctx context.Context, r io.Reader, lineFn func([]byte) error) error {
