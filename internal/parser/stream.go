@@ -3,10 +3,12 @@ package parser
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 
@@ -24,17 +26,13 @@ const (
 )
 
 func ScanEntityArchive(ctx context.Context, archivePath, entityName string, lineFn func([]byte) error) (model.DumpMetadata, error) {
-	file, err := os.Open(archivePath)
+	stream, err := openArchiveStream(ctx, archivePath)
 	if err != nil {
 		return model.DumpMetadata{}, err
 	}
-	defer file.Close()
+	defer stream.Close()
 
-	xzr, err := xz.NewReader(file)
-	if err != nil {
-		return model.DumpMetadata{}, err
-	}
-	tr := tar.NewReader(xzr)
+	tr := tar.NewReader(stream.Reader)
 
 	target := path.Join("mbdump", entityName)
 	var meta model.DumpMetadata
@@ -82,6 +80,53 @@ func ScanEntityArchive(ctx context.Context, archivePath, entityName string, line
 		return model.DumpMetadata{}, fmt.Errorf("archive %s does not contain %s", archivePath, target)
 	}
 	return meta, nil
+}
+
+type archiveStream struct {
+	Reader io.Reader
+	Close  func() error
+}
+
+func openArchiveStream(ctx context.Context, archivePath string) (*archiveStream, error) {
+	if xzPath, err := exec.LookPath("xz"); err == nil {
+		cmd := exec.CommandContext(ctx, xzPath, "-dc", "--", archivePath)
+		stdout, err := cmd.StdoutPipe()
+		if err == nil {
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err == nil {
+				return &archiveStream{
+					Reader: stdout,
+					Close: func() error {
+						_ = stdout.Close()
+						if err := cmd.Wait(); err != nil {
+							msg := strings.TrimSpace(stderr.String())
+							if msg != "" {
+								return fmt.Errorf("xz failed for %s: %s: %w", archivePath, msg, err)
+							}
+							return fmt.Errorf("xz failed for %s: %w", archivePath, err)
+						}
+						return nil
+					},
+				}, nil
+			}
+		}
+	}
+
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	xzr, err := xz.NewReader(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+
+	return &archiveStream{
+		Reader: xzr,
+		Close:  file.Close,
+	}, nil
 }
 
 func MergeDumpMetadata(dst *model.DumpMetadata, src model.DumpMetadata) error {

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -183,6 +184,8 @@ func importEntity(ctx context.Context, writer *mbdb.Writer, entity, archivePath 
 
 	var meta model.DumpMetadata
 	var firstErr error
+	start := time.Now()
+	var parsedCount atomic.Int64
 	var errOnce sync.Once
 	setErr := func(err error) {
 		if err == nil {
@@ -225,6 +228,13 @@ func importEntity(ctx context.Context, writer *mbdb.Writer, entity, archivePath 
 				if err != nil {
 					setErr(err)
 					return
+				}
+				count := parsedCount.Add(1)
+				if count%100000 == 0 {
+					elapsedRaw := time.Since(start)
+					elapsed := elapsedRaw.Round(time.Second)
+					rate := float64(count) / elapsedRaw.Seconds()
+					log.Printf("entity=%s parsed=%d elapsed=%s rate=%.0f rows/sec", entity, count, elapsed, rate)
 				}
 				if mutation.Empty() {
 					continue
