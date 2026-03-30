@@ -9,6 +9,8 @@ import (
 	"github.com/zephyraoss/mbforge/internal/model"
 )
 
+const maxSQLiteVariables = 32766
+
 type tableSpec struct {
 	key      string
 	table    string
@@ -193,9 +195,17 @@ func (w *Writer) flushBatch(batch *tableBatch) error {
 	if w.tx == nil {
 		return fmt.Errorf("writer transaction already closed")
 	}
-	sqlText, args := buildInsertSQL(batch.spec, batch.rows)
-	if _, err := w.tx.ExecContext(w.ctx, sqlText, args...); err != nil {
-		return fmt.Errorf("insert into %s: %w", batch.spec.table, err)
+
+	maxRows := maxRowsPerInsert(batch.spec)
+	for start := 0; start < len(batch.rows); start += maxRows {
+		end := start + maxRows
+		if end > len(batch.rows) {
+			end = len(batch.rows)
+		}
+		sqlText, args := buildInsertSQL(batch.spec, batch.rows[start:end])
+		if _, err := w.tx.ExecContext(w.ctx, sqlText, args...); err != nil {
+			return fmt.Errorf("insert into %s: %w", batch.spec.table, err)
+		}
 	}
 	batch.rows = batch.rows[:0]
 	return nil
@@ -226,6 +236,18 @@ func buildInsertSQL(spec tableSpec, rows [][]any) (string, []any) {
 		args = append(args, row...)
 	}
 	return b.String(), args
+}
+
+func maxRowsPerInsert(spec tableSpec) int {
+	columnCount := len(spec.columns)
+	if columnCount <= 0 {
+		return 1
+	}
+	maxRows := maxSQLiteVariables / columnCount
+	if maxRows < 1 {
+		return 1
+	}
+	return maxRows
 }
 
 func (w *Writer) addArtistRows(rows []model.ArtistRow) error {
