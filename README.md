@@ -20,6 +20,7 @@ Incremental updates belong in Chromakopia, which resumes from `_meta.replication
 - Streams `xz -> tar -> JSONL` without extracting the full dumps to disk
 - Imports artists, release groups, releases, embedded recordings/tracks, and standalone recordings
 - Defers secondary index creation until after the bulk load
+- Optionally builds a full-text search index with `--search-index`
 - Writes `_meta` with dump and replication metadata
 - Runs `PRAGMA optimize` and `VACUUM`
 
@@ -31,7 +32,13 @@ Incremental updates belong in Chromakopia, which resumes from `_meta.replication
 
 - Searches artists, release groups, releases, recordings, and tracks from a single free-form query
 - Accepts artist names, track titles, album titles, MBIDs, ISRCs, and release barcodes
-- Uses a small per-section limit so ad hoc inspection stays readable
+- Uses the full-text search index when present
+- Falls back to the older slower SQL path when the search index is absent
+
+`mbforge search-index`
+
+- Builds or rebuilds the full-text search index on an existing database
+- Useful when you already finished a long `build` run without `--search-index`
 
 `mbforge version`
 
@@ -57,6 +64,7 @@ mbforge build \
   --dump-dir /mnt/nvme/mbdump \
   --workers 16 \
   --batch-size 5000 \
+  --search-index \
   --verbose
 ```
 
@@ -78,6 +86,12 @@ Search across the main entities:
 
 ```bash
 mbforge search --db ./musicbrainz.db "nirvana"
+```
+
+Build the fast search index on an existing database:
+
+```bash
+mbforge search-index --db ./musicbrainz.db
 ```
 
 ## Pipeline

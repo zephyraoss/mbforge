@@ -5,13 +5,17 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	mbdb "github.com/zephyraoss/mbforge/internal/db"
 	"github.com/zephyraoss/mbforge/internal/libsqlutil"
 )
+
+var searchTokenRE = regexp.MustCompile(`[\p{L}\p{N}]+`)
 
 type searchConfig struct {
 	DBPath string
@@ -57,6 +61,16 @@ type trackSearchResult struct {
 	Artists      string
 }
 
+type indexedSearchResult struct {
+	EntityType string
+	EntityMBID string
+	Heading    string
+	Subtitle   string
+	Meta       string
+	Aux        string
+	Score      float64
+}
+
 func newSearchCmd() *cobra.Command {
 	cfg := searchConfig{
 		DBPath: "./musicbrainz.db",
@@ -95,6 +109,25 @@ func runSearch(ctx context.Context, cfg searchConfig, query string) error {
 		return err
 	}
 
+	hasSearchIndex, err := mbdb.SearchIndexExists(ctx, db)
+	if err != nil {
+		return err
+	}
+	if hasSearchIndex {
+		results, err := searchFast(ctx, db, query, cfg.Limit)
+		if err != nil {
+			return err
+		}
+		if len(results) == 0 {
+			fmt.Fprintln(os.Stdout, "no matches")
+			return nil
+		}
+		printIndexedResults(results)
+		return nil
+	}
+
+	fmt.Fprintln(os.Stderr, "search index not found; run `mbforge search-index --db ./musicbrainz.db` for fast search. Falling back to slow SQL.")
+
 	artists, err := searchArtists(ctx, db, query, cfg.Limit)
 	if err != nil {
 		return err
@@ -127,6 +160,75 @@ func runSearch(ctx context.Context, cfg searchConfig, query string) error {
 	printRecordingResults(recordings)
 	printTrackResults(tracks)
 	return nil
+}
+
+func searchFast(ctx context.Context, db *sql.DB, query string, limit int) ([]indexedSearchResult, error) {
+	matchQuery, ok := buildFTSQuery(query)
+	if !ok {
+		return nil, nil
+	}
+
+	fetchLimit := limit * 8
+	if fetchLimit < 50 {
+		fetchLimit = 50
+	}
+
+	rows, err := db.QueryContext(ctx, `
+SELECT
+    entity_type,
+    entity_mbid,
+    heading,
+    subtitle,
+    meta,
+    aux,
+    bm25(search_fts, 8.0, 4.0, 2.0, 1.0) AS score
+FROM search_fts
+WHERE search_fts MATCH ?
+ORDER BY score, entity_type, heading
+LIMIT ?`, matchQuery, fetchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	typeLimit := map[string]int{
+		"artist":        limit,
+		"release_group": limit,
+		"release":       limit,
+		"recording":     limit,
+		"track":         limit,
+	}
+	typeCounts := make(map[string]int, len(typeLimit))
+	out := make([]indexedSearchResult, 0, fetchLimit)
+
+	for rows.Next() {
+		var item indexedSearchResult
+		if err := rows.Scan(&item.EntityType, &item.EntityMBID, &item.Heading, &item.Subtitle, &item.Meta, &item.Aux, &item.Score); err != nil {
+			return nil, err
+		}
+		if typeCounts[item.EntityType] >= typeLimit[item.EntityType] {
+			continue
+		}
+		typeCounts[item.EntityType]++
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func buildFTSQuery(query string) (string, bool) {
+	tokens := searchTokenRE.FindAllString(strings.ToLower(query), -1)
+	if len(tokens) == 0 {
+		return "", false
+	}
+
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		parts = append(parts, token+"*")
+	}
+	return strings.Join(parts, " AND "), true
 }
 
 func searchArtists(ctx context.Context, db *sql.DB, query string, limit int) ([]artistSearchResult, error) {
@@ -650,4 +752,48 @@ func printTrackResults(results []trackSearchResult) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", item.MBID, item.Title, item.Number, item.ReleaseTitle, item.Artists)
 	}
 	_ = w.Flush()
+}
+
+func printIndexedResults(results []indexedSearchResult) {
+	orderedTypes := []string{"artist", "release_group", "release", "recording", "track"}
+	sectionTitles := map[string]string{
+		"artist":        "Artists",
+		"release_group": "Release Groups",
+		"release":       "Releases",
+		"recording":     "Recordings",
+		"track":         "Tracks",
+	}
+
+	grouped := make(map[string][]indexedSearchResult, len(orderedTypes))
+	for _, item := range results {
+		grouped[item.EntityType] = append(grouped[item.EntityType], item)
+	}
+
+	firstSection := true
+	for _, entityType := range orderedTypes {
+		items := grouped[entityType]
+		if len(items) == 0 {
+			continue
+		}
+		if !firstSection {
+			fmt.Fprintln(os.Stdout)
+		}
+		firstSection = false
+
+		fmt.Fprintln(os.Stdout, sectionTitles[entityType])
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "MBID\tTitle\tContext\tMeta")
+		for _, item := range items {
+			context := item.Subtitle
+			if item.Aux != "" {
+				if context != "" {
+					context += " | " + item.Aux
+				} else {
+					context = item.Aux
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", item.EntityMBID, item.Heading, context, item.Meta)
+		}
+		_ = w.Flush()
+	}
 }

@@ -47,6 +47,10 @@ func runInfo(ctx context.Context, cfg infoConfig) error {
 	if err != nil {
 		return err
 	}
+	hasSearchIndex, err := mbdb.SearchIndexExists(ctx, db)
+	if err != nil {
+		return err
+	}
 
 	info, err := os.Stat(cfg.DBPath)
 	if err != nil {
@@ -71,6 +75,11 @@ func runInfo(ctx context.Context, cfg infoConfig) error {
 	fmt.Fprintf(w, "releases\t%d\n", counts["releases"])
 	fmt.Fprintf(w, "recordings\t%d\n", counts["recordings"])
 	fmt.Fprintf(w, "tracks\t%d\n", counts["tracks"])
+	if hasSearchIndex {
+		fmt.Fprintf(w, "search_index\tpresent\n")
+	} else {
+		fmt.Fprintf(w, "search_index\tabsent\n")
+	}
 	for _, key := range []string{"dump_dir", "replication_sequence", "schema_sequence", "json_schema_number", "dump_timestamp", "imported_at"} {
 		if value := meta[key]; value != "" {
 			fmt.Fprintf(w, "%s\t%s\n", key, value)

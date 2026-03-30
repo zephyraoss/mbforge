@@ -29,14 +29,15 @@ import (
 var entityOrder = []string{"artist", "release-group", "release", "recording"}
 
 type buildConfig struct {
-	OutputPath string
-	DumpDir    string
-	KeepDumps  bool
-	Workers    int
-	BatchSize  int
-	Entities   string
-	Mirror     string
-	Verbose    bool
+	OutputPath  string
+	DumpDir     string
+	KeepDumps   bool
+	Workers     int
+	BatchSize   int
+	Entities    string
+	Mirror      string
+	Verbose     bool
+	SearchIndex bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -66,6 +67,7 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&cfg.Entities, "entities", "e", cfg.Entities, "Comma-separated entity types to import")
 	cmd.Flags().StringVar(&cfg.Mirror, "mirror", cfg.Mirror, "Base URL for the MusicBrainz JSON dump mirror")
 	cmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", cfg.Verbose, "Verbose logging with progress bars")
+	cmd.Flags().BoolVar(&cfg.SearchIndex, "search-index", cfg.SearchIndex, "Build the full-text search index after import")
 	return cmd
 }
 
@@ -132,6 +134,7 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 		if !ok {
 			continue
 		}
+		entityStart := time.Now()
 		log.Printf("importing entity=%s archive=%s", entity, localPath)
 		importMeta, err := importEntity(ctx, writer, entity, localPath, cfg.Workers)
 		if err != nil {
@@ -143,20 +146,33 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 		if err := writer.Flush(); err != nil {
 			return err
 		}
+		log.Printf("finished entity=%s elapsed=%s", entity, time.Since(entityStart).Round(time.Second))
 	}
 
 	if err := writer.Close(); err != nil {
 		return err
 	}
+	log.Printf("creating secondary indexes")
 	if err := mbdb.CreateIndexes(ctx, db); err != nil {
 		return err
 	}
+	log.Printf("secondary indexes complete")
+	if cfg.SearchIndex {
+		log.Printf("creating search index")
+		if err := mbdb.RebuildSearchIndex(ctx, db, log.Printf); err != nil {
+			return err
+		}
+		log.Printf("search index complete")
+	}
+	log.Printf("writing _meta")
 	if err := mbdb.WriteMeta(ctx, db, meta); err != nil {
 		return err
 	}
+	log.Printf("running PRAGMA optimize and VACUUM")
 	if err := mbdb.Finalize(ctx, db); err != nil {
 		return err
 	}
+	log.Printf("optimize/VACUUM complete")
 
 	if !cfg.KeepDumps {
 		if err := os.RemoveAll(filepath.Join(cfg.DumpDir, resolved.Directory)); err != nil {
