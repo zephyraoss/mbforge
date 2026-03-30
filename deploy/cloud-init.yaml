@@ -1,0 +1,54 @@
+#cloud-config
+package_update: true
+packages:
+  - curl
+  - git
+  - rsync
+
+runcmd:
+  - |
+    curl -fsSL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz -o /tmp/go.tar.gz
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    echo 'export PATH=/usr/local/go/bin:$PATH' >/etc/profile.d/go-path.sh
+    export PATH=/usr/local/go/bin:$PATH
+
+  - |
+    DISK=$(lsblk -rno NAME,TYPE | awk '$2=="disk" && $1 ~ /^sd/ {print $1}' | tail -1)
+    if [ -n "$DISK" ]; then
+      if ! blkid /dev/$DISK; then
+        mkfs.ext4 /dev/$DISK
+      fi
+      mkdir -p /mnt/disk
+      mount /dev/$DISK /mnt/disk
+    fi
+
+  - |
+    mkfs.ext4 /dev/nvme0n1 || true
+    mkdir -p /mnt/nvme
+    mount /dev/nvme0n1 /mnt/nvme || true
+
+  - |
+    git clone https://github.com/zephyraoss/mbforge.git /opt/mbforge
+    cd /opt/mbforge
+    /usr/local/go/bin/go build -o /usr/local/bin/mbforge ./cmd/mbforge
+
+  - |
+    /usr/local/bin/mbforge build \
+      --output /mnt/nvme/metadata.db \
+      --dump-dir /mnt/nvme/mbdump \
+      --workers 16 \
+      --batch-size 5000 \
+      --verbose \
+      >> /var/log/mbforge-build.log 2>&1
+
+  - |
+    if [ -d /mnt/disk ]; then
+      rsync -av /mnt/nvme/metadata.db /mnt/disk/metadata.db
+    fi
+
+  # Replace this with your real upload/copy step to the sqld VM if needed.
+  # Example:
+  # - rsync -av /mnt/disk/metadata.db user@metadata-vm:/srv/libsql/metadata.db
+
+  - shutdown -h now
