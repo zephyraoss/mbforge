@@ -79,7 +79,7 @@ func newSearchCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "search [query]",
-		Short: "Search artists, recordings, releases, release groups, and tracks",
+		Short: "Search artists, labels, works, recordings, releases, release groups, and tracks",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := strings.TrimSpace(strings.Join(args, " "))
@@ -193,6 +193,8 @@ LIMIT ?`, matchQuery, fetchLimit)
 
 	typeLimit := map[string]int{
 		"artist":        limit,
+		"label":         limit,
+		"work":          limit,
 		"release_group": limit,
 		"release":       limit,
 		"recording":     limit,
@@ -755,9 +757,11 @@ func printTrackResults(results []trackSearchResult) {
 }
 
 func printIndexedResults(results []indexedSearchResult) {
-	orderedTypes := []string{"artist", "release_group", "release", "recording", "track"}
+	orderedTypes := []string{"artist", "label", "work", "release_group", "release", "recording", "track"}
 	sectionTitles := map[string]string{
 		"artist":        "Artists",
+		"label":         "Labels",
+		"work":          "Works",
 		"release_group": "Release Groups",
 		"release":       "Releases",
 		"recording":     "Recordings",

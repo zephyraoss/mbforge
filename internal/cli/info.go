@@ -57,11 +57,16 @@ func runInfo(ctx context.Context, cfg infoConfig) error {
 		return err
 	}
 
+	countTables := []string{"artists", "artist_relationships", "labels", "works", "release_groups", "releases", "recordings", "recording_works", "tracks"}
 	counts := map[string]int64{}
-	for _, table := range []string{"artists", "release_groups", "releases", "recordings", "tracks"} {
+	for _, table := range countTables {
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", table)
 		var count int64
 		if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+			if tableExists, existsErr := tableExists(ctx, db, table); existsErr == nil && !tableExists {
+				counts[table] = 0
+				continue
+			}
 			return err
 		}
 		counts[table] = count
@@ -70,11 +75,9 @@ func runInfo(ctx context.Context, cfg infoConfig) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "path\t%s\n", cfg.DBPath)
 	fmt.Fprintf(w, "size_bytes\t%d\n", info.Size())
-	fmt.Fprintf(w, "artists\t%d\n", counts["artists"])
-	fmt.Fprintf(w, "release_groups\t%d\n", counts["release_groups"])
-	fmt.Fprintf(w, "releases\t%d\n", counts["releases"])
-	fmt.Fprintf(w, "recordings\t%d\n", counts["recordings"])
-	fmt.Fprintf(w, "tracks\t%d\n", counts["tracks"])
+	for _, table := range countTables {
+		fmt.Fprintf(w, "%s\t%d\n", table, counts[table])
+	}
 	if hasSearchIndex {
 		fmt.Fprintf(w, "search_index\tpresent\n")
 	} else {

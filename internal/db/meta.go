@@ -39,6 +39,18 @@ func WriteMeta(ctx context.Context, db *sql.DB, meta model.DumpMetadata) error {
 	return tx.Commit()
 }
 
+func UpdateMetaInTx(ctx context.Context, tx *sql.Tx, values map[string]string) error {
+	for key, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO _meta(key, value) VALUES(?, ?)`, key, value); err != nil {
+			return fmt.Errorf("update meta %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
 func ReadMeta(ctx context.Context, db *sql.DB) (map[string]string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT key, value FROM _meta ORDER BY key`)
 	if err != nil {

@@ -45,6 +45,90 @@ type ArtistGenreRow struct {
 	Count      int
 }
 
+type ArtistRelationshipRow struct {
+	ArtistMBID        string
+	RelatedArtistMBID string
+	RelatedArtistName string
+	Type              string
+	Direction         string
+	BeginDate         string
+	EndDate           string
+	Ended             bool
+	Attributes        string
+}
+
+type LabelRow struct {
+	MBID           string
+	Name           string
+	SortName       string
+	Disambiguation string
+	Type           string
+	LabelCode      *int
+	Country        string
+	BeginDate      string
+	EndDate        string
+	Ended          bool
+	AreaMBID       string
+	AreaName       string
+}
+
+type LabelAliasRow struct {
+	LabelMBID string
+	Name      string
+	SortName  string
+	Type      string
+	Locale    string
+	IsPrimary bool
+}
+
+type LabelTagRow struct {
+	LabelMBID string
+	Tag       string
+	Count     int
+}
+
+type LabelGenreRow struct {
+	LabelMBID string
+	GenreMBID string
+	GenreName string
+	Count     int
+}
+
+type WorkRow struct {
+	MBID           string
+	Title          string
+	Disambiguation string
+	Type           string
+	Languages      string
+}
+
+type WorkAliasRow struct {
+	WorkMBID  string
+	Name      string
+	SortName  string
+	Type      string
+	Locale    string
+	IsPrimary bool
+}
+
+type WorkISWCRow struct {
+	WorkMBID string
+	ISWC     string
+}
+
+type WorkTagRow struct {
+	WorkMBID string
+	Tag      string
+	Count    int
+}
+
+type RecordingWorkRow struct {
+	RecordingMBID string
+	WorkMBID      string
+	Type          string
+	Attributes    string
+}
+
 type ReleaseGroupRow struct {
 	MBID             string
 	Title            string
@@ -158,6 +242,16 @@ type Mutation struct {
 	ArtistAliases              []ArtistAliasRow
 	ArtistTags                 []ArtistTagRow
 	ArtistGenres               []ArtistGenreRow
+	ArtistRelationships        []ArtistRelationshipRow
+	Labels                     []LabelRow
+	LabelAliases               []LabelAliasRow
+	LabelTags                  []LabelTagRow
+	LabelGenres                []LabelGenreRow
+	Works                      []WorkRow
+	WorkAliases                []WorkAliasRow
+	WorkISWCs                  []WorkISWCRow
+	WorkTags                   []WorkTagRow
+	RecordingWorks             []RecordingWorkRow
 	ReleaseGroups              []ReleaseGroupRow
 	ReleaseGroupSecondaryTypes []ReleaseGroupSecondaryTypeRow
 	ReleaseGroupArtists        []ReleaseGroupArtistRow
@@ -179,6 +273,16 @@ func (m Mutation) Empty() bool {
 		len(m.ArtistAliases) == 0 &&
 		len(m.ArtistTags) == 0 &&
 		len(m.ArtistGenres) == 0 &&
+		len(m.ArtistRelationships) == 0 &&
+		len(m.Labels) == 0 &&
+		len(m.LabelAliases) == 0 &&
+		len(m.LabelTags) == 0 &&
+		len(m.LabelGenres) == 0 &&
+		len(m.Works) == 0 &&
+		len(m.WorkAliases) == 0 &&
+		len(m.WorkISWCs) == 0 &&
+		len(m.WorkTags) == 0 &&
+		len(m.RecordingWorks) == 0 &&
 		len(m.ReleaseGroups) == 0 &&
 		len(m.ReleaseGroupSecondaryTypes) == 0 &&
 		len(m.ReleaseGroupArtists) == 0 &&

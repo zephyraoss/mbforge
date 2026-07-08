@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const createMetaTable = `
@@ -52,6 +53,98 @@ CREATE TABLE IF NOT EXISTS artist_genres (
     genre_name  TEXT NOT NULL,
     count       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (artist_mbid, genre_mbid)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS artist_relationships (
+    artist_mbid         TEXT NOT NULL REFERENCES artists(mbid),
+    related_artist_mbid TEXT NOT NULL,
+    related_artist_name TEXT NOT NULL DEFAULT '',
+    type                TEXT NOT NULL,
+    direction           TEXT NOT NULL DEFAULT '',
+    begin_date          TEXT NOT NULL DEFAULT '',
+    end_date            TEXT NOT NULL DEFAULT '',
+    ended               INTEGER NOT NULL DEFAULT 0,
+    attributes          TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (artist_mbid, related_artist_mbid, type, direction, begin_date, end_date, attributes)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS labels (
+    mbid           TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    sort_name      TEXT NOT NULL,
+    disambiguation TEXT NOT NULL DEFAULT '',
+    type           TEXT,
+    label_code     INTEGER,
+    country        TEXT,
+    begin_date     TEXT,
+    end_date       TEXT,
+    ended          INTEGER NOT NULL DEFAULT 0,
+    area_mbid      TEXT,
+    area_name      TEXT
+);`,
+	`
+CREATE TABLE IF NOT EXISTS label_aliases (
+    label_mbid TEXT NOT NULL REFERENCES labels(mbid),
+    name       TEXT NOT NULL,
+    sort_name  TEXT,
+    type       TEXT,
+    locale     TEXT NOT NULL DEFAULT '',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (label_mbid, name, locale)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS label_tags (
+    label_mbid TEXT NOT NULL REFERENCES labels(mbid),
+    tag        TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (label_mbid, tag)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS label_genres (
+    label_mbid TEXT NOT NULL REFERENCES labels(mbid),
+    genre_mbid TEXT NOT NULL,
+    genre_name TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (label_mbid, genre_mbid)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS works (
+    mbid           TEXT PRIMARY KEY,
+    title          TEXT NOT NULL,
+    disambiguation TEXT NOT NULL DEFAULT '',
+    type           TEXT,
+    languages      TEXT NOT NULL DEFAULT ''
+);`,
+	`
+CREATE TABLE IF NOT EXISTS work_aliases (
+    work_mbid  TEXT NOT NULL REFERENCES works(mbid),
+    name       TEXT NOT NULL,
+    sort_name  TEXT,
+    type       TEXT,
+    locale     TEXT NOT NULL DEFAULT '',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (work_mbid, name, locale)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS work_iswcs (
+    work_mbid TEXT NOT NULL REFERENCES works(mbid),
+    iswc      TEXT NOT NULL,
+    PRIMARY KEY (work_mbid, iswc)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS work_tags (
+    work_mbid TEXT NOT NULL REFERENCES works(mbid),
+    tag       TEXT NOT NULL,
+    count     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (work_mbid, tag)
+);`,
+	`
+CREATE TABLE IF NOT EXISTS recording_works (
+    recording_mbid TEXT NOT NULL,
+    work_mbid      TEXT NOT NULL REFERENCES works(mbid),
+    type           TEXT NOT NULL,
+    attributes     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (recording_mbid, work_mbid, type, attributes)
 );`,
 	`
 CREATE TABLE IF NOT EXISTS release_groups (
@@ -177,6 +270,14 @@ var createIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);`,
 	`CREATE INDEX IF NOT EXISTS idx_artists_sort_name ON artists(sort_name);`,
 	`CREATE INDEX IF NOT EXISTS idx_artist_aliases_name ON artist_aliases(name);`,
+	`CREATE INDEX IF NOT EXISTS idx_artist_relationships_related ON artist_relationships(related_artist_mbid);`,
+	`CREATE INDEX IF NOT EXISTS idx_labels_name ON labels(name);`,
+	`CREATE INDEX IF NOT EXISTS idx_labels_sort_name ON labels(sort_name);`,
+	`CREATE INDEX IF NOT EXISTS idx_label_aliases_name ON label_aliases(name);`,
+	`CREATE INDEX IF NOT EXISTS idx_works_title ON works(title);`,
+	`CREATE INDEX IF NOT EXISTS idx_work_aliases_name ON work_aliases(name);`,
+	`CREATE INDEX IF NOT EXISTS idx_work_iswcs_iswc ON work_iswcs(iswc);`,
+	`CREATE INDEX IF NOT EXISTS idx_recording_works_work ON recording_works(work_mbid);`,
 	`CREATE INDEX IF NOT EXISTS idx_release_groups_title ON release_groups(title);`,
 	`CREATE INDEX IF NOT EXISTS idx_release_group_artists_name ON release_group_artists(artist_name);`,
 	`CREATE INDEX IF NOT EXISTS idx_releases_title ON releases(title);`,
@@ -184,6 +285,7 @@ var createIndexes = []string{
 	`CREATE INDEX IF NOT EXISTS idx_releases_barcode ON releases(barcode) WHERE barcode IS NOT NULL AND barcode != '';`,
 	`CREATE INDEX IF NOT EXISTS idx_release_artists_name ON release_artists(artist_name);`,
 	`CREATE INDEX IF NOT EXISTS idx_release_labels_name ON release_labels(label_name);`,
+	`CREATE INDEX IF NOT EXISTS idx_release_labels_label_mbid ON release_labels(label_mbid) WHERE label_mbid != '';`,
 	`CREATE INDEX IF NOT EXISTS idx_recordings_title ON recordings(title);`,
 	`CREATE INDEX IF NOT EXISTS idx_recording_artists_name ON recording_artists(artist_name);`,
 	`CREATE INDEX IF NOT EXISTS idx_recording_isrcs_isrc ON recording_isrcs(isrc);`,
@@ -199,6 +301,13 @@ var buildPragmas = []string{
 	`PRAGMA synchronous = OFF;`,
 	`PRAGMA temp_store = MEMORY;`,
 	`PRAGMA locking_mode = EXCLUSIVE;`,
+}
+
+var syncPragmas = []string{
+	`PRAGMA foreign_keys = OFF;`,
+	`PRAGMA synchronous = NORMAL;`,
+	`PRAGMA temp_store = MEMORY;`,
+	`PRAGMA busy_timeout = 30000;`,
 }
 
 func CreateSchema(ctx context.Context, db *sql.DB) error {
@@ -227,6 +336,29 @@ func ApplyBuildPragmas(ctx context.Context, db *sql.DB) error {
 		if err := execPragma(ctx, db, stmt); err != nil {
 			return fmt.Errorf("failed to execute query %s: %w", stmt, err)
 		}
+	}
+	return nil
+}
+
+func ApplySyncPragmas(ctx context.Context, db *sql.DB) error {
+	var mode string
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL;`).Scan(&mode); err != nil {
+		return fmt.Errorf("enable WAL journal mode: %w", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		return fmt.Errorf("enable WAL journal mode: database reports %q", mode)
+	}
+	for _, stmt := range syncPragmas {
+		if err := execPragma(ctx, db, stmt); err != nil {
+			return fmt.Errorf("failed to execute query %s: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+func Optimize(ctx context.Context, db *sql.DB) error {
+	if err := execPragma(ctx, db, `PRAGMA optimize;`); err != nil {
+		return fmt.Errorf("failed to execute query PRAGMA optimize;: %w", err)
 	}
 	return nil
 }

@@ -56,6 +56,7 @@ func appendRecording(m *model.Mutation, doc *recordingDoc, includeTags bool) {
 	})
 	m.RecordingArtists = append(m.RecordingArtists, normalizeArtistCreditForRecording(mbid, doc.ArtistCredit)...)
 	m.ExternalLinks = append(m.ExternalLinks, normalizeExternalLinks("recording", mbid, doc.Relations)...)
+	appendWorkRelations(m, mbid, doc.Relations)
 
 	isrcSeen := make(map[string]struct{}, len(doc.ISRCs))
 	for _, isrc := range doc.ISRCs {

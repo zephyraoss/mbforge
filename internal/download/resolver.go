@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-var SupportedEntities = []string{"artist", "release-group", "release", "recording"}
+var SupportedEntities = []string{"artist", "label", "work", "release-group", "release", "recording"}
 
 type File struct {
 	Entity string

@@ -18,11 +18,15 @@ CREATE VIRTUAL TABLE search_fts USING fts5(
 );`
 
 var searchIndexPopulateStages = []struct {
-	name string
-	sql  string
+	name       string
+	entityType string
+	sql        string
+	rowFilter  string
 }{
 	{
-		name: "artists",
+		name:       "artists",
+		entityType: "artist",
+		rowFilter:  "WHERE a.mbid = ?",
 		sql: `
 INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
 SELECT
@@ -40,10 +44,66 @@ SELECT
             ORDER BY aa.is_primary DESC, aa.name
         )
     ), '')
-FROM artists a;`,
+FROM artists a`,
 	},
 	{
-		name: "release_groups",
+		name:       "labels",
+		entityType: "label",
+		rowFilter:  "WHERE l.mbid = ?",
+		sql: `
+INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
+SELECT
+    'label',
+    l.mbid,
+    l.name,
+    COALESCE(l.sort_name, ''),
+    trim(COALESCE(l.type, '') || CASE WHEN COALESCE(l.type, '') <> '' AND COALESCE(l.country, '') <> '' THEN ' ' ELSE '' END || COALESCE(l.country, '')),
+    COALESCE((
+        SELECT group_concat(piece, ' ')
+        FROM (
+            SELECT la.name AS piece
+            FROM label_aliases la
+            WHERE la.label_mbid = l.mbid
+            ORDER BY la.is_primary DESC, la.name
+        )
+    ), '')
+FROM labels l`,
+	},
+	{
+		name:       "works",
+		entityType: "work",
+		rowFilter:  "WHERE w.mbid = ?",
+		sql: `
+INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
+SELECT
+    'work',
+    w.mbid,
+    w.title,
+    COALESCE(w.disambiguation, ''),
+    trim(COALESCE(w.type, '') || CASE WHEN COALESCE(w.type, '') <> '' AND COALESCE(w.languages, '') <> '' THEN ' ' ELSE '' END || COALESCE(w.languages, '')),
+    trim(COALESCE((
+        SELECT group_concat(piece, ' ')
+        FROM (
+            SELECT wa.name AS piece
+            FROM work_aliases wa
+            WHERE wa.work_mbid = w.mbid
+            ORDER BY wa.is_primary DESC, wa.name
+        )
+    ), '') || ' ' || COALESCE((
+        SELECT group_concat(piece, ' ')
+        FROM (
+            SELECT wi.iswc AS piece
+            FROM work_iswcs wi
+            WHERE wi.work_mbid = w.mbid
+            ORDER BY wi.iswc
+        )
+    ), ''))
+FROM works w`,
+	},
+	{
+		name:       "release_groups",
+		entityType: "release_group",
+		rowFilter:  "WHERE rg.mbid = ?",
 		sql: `
 INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
 SELECT
@@ -61,10 +121,12 @@ SELECT
     ), ''),
     trim(COALESCE(rg.primary_type, '') || CASE WHEN COALESCE(rg.primary_type, '') <> '' AND COALESCE(rg.first_release_date, '') <> '' THEN ' ' ELSE '' END || COALESCE(rg.first_release_date, '')),
     COALESCE(rg.disambiguation, '')
-FROM release_groups rg;`,
+FROM release_groups rg`,
 	},
 	{
-		name: "releases",
+		name:       "releases",
+		entityType: "release",
+		rowFilter:  "WHERE r.mbid = ?",
 		sql: `
 INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
 SELECT
@@ -90,10 +152,12 @@ SELECT
             ORDER BY rl.label_name
         )
     ), ''))
-FROM releases r;`,
+FROM releases r`,
 	},
 	{
-		name: "recordings",
+		name:       "recordings",
+		entityType: "recording",
+		rowFilter:  "WHERE r.mbid = ?",
 		sql: `
 INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
 SELECT
@@ -119,10 +183,12 @@ SELECT
             ORDER BY ri.isrc
         )
     ), '')
-FROM recordings r;`,
+FROM recordings r`,
 	},
 	{
-		name: "tracks",
+		name:       "tracks",
+		entityType: "track",
+		rowFilter:  "WHERE t.mbid = ?",
 		sql: `
 INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux)
 SELECT
@@ -141,7 +207,7 @@ SELECT
     ), ''),
     COALESCE(t.number, '')
 FROM tracks t
-JOIN releases r ON r.mbid = t.release_mbid;`,
+JOIN releases r ON r.mbid = t.release_mbid`,
 	},
 }
 
@@ -185,6 +251,37 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, logf func(string, ...an
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO search_fts(search_fts) VALUES('optimize');`); err != nil {
 		return fmt.Errorf("optimize search index: %w", err)
+	}
+	return nil
+}
+
+func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string][]string) error {
+	deleteStmt, err := tx.PrepareContext(ctx, `DELETE FROM search_fts WHERE entity_type = ? AND entity_mbid = ?`)
+	if err != nil {
+		return err
+	}
+	defer deleteStmt.Close()
+
+	for _, stage := range searchIndexPopulateStages {
+		mbids := changed[stage.entityType]
+		if len(mbids) == 0 {
+			continue
+		}
+		insertStmt, err := tx.PrepareContext(ctx, stage.sql+"\n"+stage.rowFilter)
+		if err != nil {
+			return fmt.Errorf("refresh search index %s: %w", stage.name, err)
+		}
+		for _, mbid := range mbids {
+			if _, err := deleteStmt.ExecContext(ctx, stage.entityType, mbid); err != nil {
+				insertStmt.Close()
+				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
+			}
+			if _, err := insertStmt.ExecContext(ctx, mbid); err != nil {
+				insertStmt.Close()
+				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
+			}
+		}
+		insertStmt.Close()
 	}
 	return nil
 }

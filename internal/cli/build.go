@@ -26,7 +26,7 @@ import (
 	"github.com/zephyraoss/mbforge/internal/parser"
 )
 
-var entityOrder = []string{"artist", "release-group", "release", "recording"}
+var entityOrder = []string{"artist", "label", "work", "release-group", "release", "recording"}
 
 type buildConfig struct {
 	OutputPath  string
@@ -290,6 +290,10 @@ func parserForEntity(entity string) (parseFunc, error) {
 	switch entity {
 	case "artist":
 		return parser.ParseArtist, nil
+	case "label":
+		return parser.ParseLabel, nil
+	case "work":
+		return parser.ParseWork, nil
 	case "release-group":
 		return parser.ParseReleaseGroup, nil
 	case "release":

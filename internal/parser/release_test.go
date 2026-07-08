@@ -36,7 +36,10 @@ func TestParseReleaseExtractsEmbeddedRecordingData(t *testing.T) {
 							"first-release-date":"2020-01-15",
 							"artist-credit":[{"name":"Artist Name","joinphrase":"","artist":{"id":"artist-1","name":"Artist Name"}}],
 							"isrcs":["USRC11234567"],
-							"relations":[{"type":"wikidata","target-type":"url","url":{"resource":"https://www.wikidata.org/wiki/Q1"}}]
+							"relations":[
+								{"type":"wikidata","target-type":"url","url":{"resource":"https://www.wikidata.org/wiki/Q1"}},
+								{"type":"performance","target-type":"work","direction":"forward","attributes":[],"work":{"id":"work-1","title":"Work Title","type":"Song","languages":["eng"],"iswcs":["T-000.000.001-0"]}}
+							]
 						}
 					}
 				]
@@ -70,6 +73,18 @@ func TestParseReleaseExtractsEmbeddedRecordingData(t *testing.T) {
 	}
 	if got := len(mutation.ExternalLinks); got != 2 {
 		t.Fatalf("expected 2 external links, got %d", got)
+	}
+	if got := len(mutation.RecordingWorks); got != 1 {
+		t.Fatalf("expected 1 recording work link, got %d", got)
+	}
+	if got := mutation.RecordingWorks[0]; got.RecordingMBID != "recording-1" || got.WorkMBID != "work-1" {
+		t.Fatalf("unexpected recording work link: %+v", got)
+	}
+	if got := len(mutation.Works); got != 1 {
+		t.Fatalf("expected 1 embedded work row, got %d", got)
+	}
+	if got := len(mutation.WorkISWCs); got != 1 {
+		t.Fatalf("expected 1 embedded iswc row, got %d", got)
 	}
 	if got := mutation.Releases[0].ReleaseGroupMBID; got != "rg-1" {
 		t.Fatalf("unexpected release_group_mbid: %q", got)

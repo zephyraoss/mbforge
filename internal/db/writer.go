@@ -63,8 +63,6 @@ func (w *Writer) Close() error {
 		return nil
 	}
 	if err := w.Flush(); err != nil {
-		_ = w.tx.Rollback()
-		w.tx = nil
 		return err
 	}
 	err := w.tx.Commit()
@@ -106,6 +104,36 @@ func (w *Writer) WriteMutation(m model.Mutation) error {
 		return err
 	}
 	if err := w.addArtistGenreRows(m.ArtistGenres); err != nil {
+		return err
+	}
+	if err := w.addArtistRelationshipRows(m.ArtistRelationships); err != nil {
+		return err
+	}
+	if err := w.addLabelRows(m.Labels); err != nil {
+		return err
+	}
+	if err := w.addLabelAliasRows(m.LabelAliases); err != nil {
+		return err
+	}
+	if err := w.addLabelTagRows(m.LabelTags); err != nil {
+		return err
+	}
+	if err := w.addLabelGenreRows(m.LabelGenres); err != nil {
+		return err
+	}
+	if err := w.addWorkRows(m.Works); err != nil {
+		return err
+	}
+	if err := w.addWorkAliasRows(m.WorkAliases); err != nil {
+		return err
+	}
+	if err := w.addWorkISWCRows(m.WorkISWCs); err != nil {
+		return err
+	}
+	if err := w.addWorkTagRows(m.WorkTags); err != nil {
+		return err
+	}
+	if err := w.addRecordingWorkRows(m.RecordingWorks); err != nil {
 		return err
 	}
 	if err := w.addReleaseGroupRows(m.ReleaseGroups); err != nil {
@@ -159,6 +187,16 @@ func writerSpecs() map[string]tableSpec {
 		"artist_aliases":                {key: "artist_aliases", table: "artist_aliases", insertOp: "INSERT OR IGNORE", columns: []string{"artist_mbid", "name", "sort_name", "type", "locale", "is_primary"}},
 		"artist_tags":                   {key: "artist_tags", table: "artist_tags", insertOp: "INSERT OR IGNORE", columns: []string{"artist_mbid", "tag", "count"}},
 		"artist_genres":                 {key: "artist_genres", table: "artist_genres", insertOp: "INSERT OR IGNORE", columns: []string{"artist_mbid", "genre_mbid", "genre_name", "count"}},
+		"artist_relationships":          {key: "artist_relationships", table: "artist_relationships", insertOp: "INSERT OR IGNORE", columns: []string{"artist_mbid", "related_artist_mbid", "related_artist_name", "type", "direction", "begin_date", "end_date", "ended", "attributes"}},
+		"labels":                        {key: "labels", table: "labels", insertOp: "INSERT", columns: []string{"mbid", "name", "sort_name", "disambiguation", "type", "label_code", "country", "begin_date", "end_date", "ended", "area_mbid", "area_name"}},
+		"label_aliases":                 {key: "label_aliases", table: "label_aliases", insertOp: "INSERT OR IGNORE", columns: []string{"label_mbid", "name", "sort_name", "type", "locale", "is_primary"}},
+		"label_tags":                    {key: "label_tags", table: "label_tags", insertOp: "INSERT OR IGNORE", columns: []string{"label_mbid", "tag", "count"}},
+		"label_genres":                  {key: "label_genres", table: "label_genres", insertOp: "INSERT OR IGNORE", columns: []string{"label_mbid", "genre_mbid", "genre_name", "count"}},
+		"works":                         {key: "works", table: "works", insertOp: "INSERT OR IGNORE", columns: []string{"mbid", "title", "disambiguation", "type", "languages"}},
+		"work_aliases":                  {key: "work_aliases", table: "work_aliases", insertOp: "INSERT OR IGNORE", columns: []string{"work_mbid", "name", "sort_name", "type", "locale", "is_primary"}},
+		"work_iswcs":                    {key: "work_iswcs", table: "work_iswcs", insertOp: "INSERT OR IGNORE", columns: []string{"work_mbid", "iswc"}},
+		"work_tags":                     {key: "work_tags", table: "work_tags", insertOp: "INSERT OR IGNORE", columns: []string{"work_mbid", "tag", "count"}},
+		"recording_works":               {key: "recording_works", table: "recording_works", insertOp: "INSERT OR IGNORE", columns: []string{"recording_mbid", "work_mbid", "type", "attributes"}},
 		"release_groups":                {key: "release_groups", table: "release_groups", insertOp: "INSERT", columns: []string{"mbid", "title", "primary_type", "disambiguation", "first_release_date"}},
 		"release_group_secondary_types": {key: "release_group_secondary_types", table: "release_group_secondary_types", insertOp: "INSERT OR IGNORE", columns: []string{"release_group_mbid", "type"}},
 		"release_group_artists":         {key: "release_group_artists", table: "release_group_artists", insertOp: "INSERT OR IGNORE", columns: []string{"release_group_mbid", "artist_mbid", "artist_name", "join_phrase", "position"}},
@@ -253,7 +291,7 @@ func maxRowsPerInsert(spec tableSpec) int {
 func (w *Writer) addArtistRows(rows []model.ArtistRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.MBID, row.Name, row.SortName, row.Disambiguation, nullIfEmpty(row.Type), nullIfEmpty(row.Country), nullIfEmpty(row.Gender), nullIfEmpty(row.BeginDate), nullIfEmpty(row.EndDate), boolInt(row.Ended), nullIfEmpty(row.AreaMBID), nullIfEmpty(row.AreaName)})
+		vals = append(vals, artistRowValues(row))
 	}
 	return w.addRows("artists", vals)
 }
@@ -261,7 +299,7 @@ func (w *Writer) addArtistRows(rows []model.ArtistRow) error {
 func (w *Writer) addArtistAliasRows(rows []model.ArtistAliasRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ArtistMBID, row.Name, nullIfEmpty(row.SortName), nullIfEmpty(row.Type), row.Locale, boolInt(row.IsPrimary)})
+		vals = append(vals, artistAliasRowValues(row))
 	}
 	return w.addRows("artist_aliases", vals)
 }
@@ -269,7 +307,7 @@ func (w *Writer) addArtistAliasRows(rows []model.ArtistAliasRow) error {
 func (w *Writer) addArtistTagRows(rows []model.ArtistTagRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ArtistMBID, row.Tag, row.Count})
+		vals = append(vals, artistTagRowValues(row))
 	}
 	return w.addRows("artist_tags", vals)
 }
@@ -277,15 +315,95 @@ func (w *Writer) addArtistTagRows(rows []model.ArtistTagRow) error {
 func (w *Writer) addArtistGenreRows(rows []model.ArtistGenreRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ArtistMBID, row.GenreMBID, row.GenreName, row.Count})
+		vals = append(vals, artistGenreRowValues(row))
 	}
 	return w.addRows("artist_genres", vals)
+}
+
+func (w *Writer) addArtistRelationshipRows(rows []model.ArtistRelationshipRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, artistRelationshipRowValues(row))
+	}
+	return w.addRows("artist_relationships", vals)
+}
+
+func (w *Writer) addLabelRows(rows []model.LabelRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, labelRowValues(row))
+	}
+	return w.addRows("labels", vals)
+}
+
+func (w *Writer) addLabelAliasRows(rows []model.LabelAliasRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, labelAliasRowValues(row))
+	}
+	return w.addRows("label_aliases", vals)
+}
+
+func (w *Writer) addLabelTagRows(rows []model.LabelTagRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, labelTagRowValues(row))
+	}
+	return w.addRows("label_tags", vals)
+}
+
+func (w *Writer) addLabelGenreRows(rows []model.LabelGenreRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, labelGenreRowValues(row))
+	}
+	return w.addRows("label_genres", vals)
+}
+
+func (w *Writer) addWorkRows(rows []model.WorkRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, workRowValues(row))
+	}
+	return w.addRows("works", vals)
+}
+
+func (w *Writer) addWorkAliasRows(rows []model.WorkAliasRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, workAliasRowValues(row))
+	}
+	return w.addRows("work_aliases", vals)
+}
+
+func (w *Writer) addWorkISWCRows(rows []model.WorkISWCRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, workISWCRowValues(row))
+	}
+	return w.addRows("work_iswcs", vals)
+}
+
+func (w *Writer) addWorkTagRows(rows []model.WorkTagRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, workTagRowValues(row))
+	}
+	return w.addRows("work_tags", vals)
+}
+
+func (w *Writer) addRecordingWorkRows(rows []model.RecordingWorkRow) error {
+	vals := make([][]any, 0, len(rows))
+	for _, row := range rows {
+		vals = append(vals, recordingWorkRowValues(row))
+	}
+	return w.addRows("recording_works", vals)
 }
 
 func (w *Writer) addReleaseGroupRows(rows []model.ReleaseGroupRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.MBID, row.Title, nullIfEmpty(row.PrimaryType), row.Disambiguation, nullIfEmpty(row.FirstReleaseDate)})
+		vals = append(vals, releaseGroupRowValues(row))
 	}
 	return w.addRows("release_groups", vals)
 }
@@ -293,7 +411,7 @@ func (w *Writer) addReleaseGroupRows(rows []model.ReleaseGroupRow) error {
 func (w *Writer) addReleaseGroupSecondaryTypeRows(rows []model.ReleaseGroupSecondaryTypeRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseGroupMBID, row.Type})
+		vals = append(vals, releaseGroupSecondaryTypeRowValues(row))
 	}
 	return w.addRows("release_group_secondary_types", vals)
 }
@@ -301,7 +419,7 @@ func (w *Writer) addReleaseGroupSecondaryTypeRows(rows []model.ReleaseGroupSecon
 func (w *Writer) addReleaseGroupArtistRows(rows []model.ReleaseGroupArtistRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseGroupMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position})
+		vals = append(vals, releaseGroupArtistRowValues(row))
 	}
 	return w.addRows("release_group_artists", vals)
 }
@@ -309,7 +427,7 @@ func (w *Writer) addReleaseGroupArtistRows(rows []model.ReleaseGroupArtistRow) e
 func (w *Writer) addReleaseGroupTagRows(rows []model.ReleaseGroupTagRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseGroupMBID, row.Tag, row.Count})
+		vals = append(vals, releaseGroupTagRowValues(row))
 	}
 	return w.addRows("release_group_tags", vals)
 }
@@ -317,7 +435,7 @@ func (w *Writer) addReleaseGroupTagRows(rows []model.ReleaseGroupTagRow) error {
 func (w *Writer) addReleaseRows(rows []model.ReleaseRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.MBID, row.Title, nullIfEmpty(row.Status), nullIfEmpty(row.Date), nullIfEmpty(row.Country), nullIfEmpty(row.Barcode), nullIfEmpty(row.Packaging), nullIfEmpty(row.Language), nullIfEmpty(row.Script), nullIfEmpty(row.ReleaseGroupMBID)})
+		vals = append(vals, releaseRowValues(row))
 	}
 	return w.addRows("releases", vals)
 }
@@ -325,7 +443,7 @@ func (w *Writer) addReleaseRows(rows []model.ReleaseRow) error {
 func (w *Writer) addReleaseArtistRows(rows []model.ReleaseArtistRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position})
+		vals = append(vals, releaseArtistRowValues(row))
 	}
 	return w.addRows("release_artists", vals)
 }
@@ -333,7 +451,7 @@ func (w *Writer) addReleaseArtistRows(rows []model.ReleaseArtistRow) error {
 func (w *Writer) addReleaseLabelRows(rows []model.ReleaseLabelRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseMBID, row.LabelMBID, row.LabelName, row.CatalogNumber})
+		vals = append(vals, releaseLabelRowValues(row))
 	}
 	return w.addRows("release_labels", vals)
 }
@@ -341,7 +459,7 @@ func (w *Writer) addReleaseLabelRows(rows []model.ReleaseLabelRow) error {
 func (w *Writer) addReleaseMediaRows(rows []model.ReleaseMediaRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.ReleaseMBID, row.Position, nullIfEmpty(row.Format), row.TrackCount})
+		vals = append(vals, releaseMediaRowValues(row))
 	}
 	return w.addRows("release_media", vals)
 }
@@ -349,7 +467,7 @@ func (w *Writer) addReleaseMediaRows(rows []model.ReleaseMediaRow) error {
 func (w *Writer) addRecordingRows(rows []model.RecordingRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.MBID, row.Title, row.Length, row.Disambiguation, boolInt(row.Video), nullIfEmpty(row.FirstReleaseDate)})
+		vals = append(vals, recordingRowValues(row))
 	}
 	return w.addRows("recordings", vals)
 }
@@ -357,7 +475,7 @@ func (w *Writer) addRecordingRows(rows []model.RecordingRow) error {
 func (w *Writer) addRecordingArtistRows(rows []model.RecordingArtistRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.RecordingMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position})
+		vals = append(vals, recordingArtistRowValues(row))
 	}
 	return w.addRows("recording_artists", vals)
 }
@@ -365,7 +483,7 @@ func (w *Writer) addRecordingArtistRows(rows []model.RecordingArtistRow) error {
 func (w *Writer) addRecordingISRCRows(rows []model.RecordingISRCRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.RecordingMBID, row.ISRC})
+		vals = append(vals, recordingISRCRowValues(row))
 	}
 	return w.addRows("recording_isrcs", vals)
 }
@@ -373,7 +491,7 @@ func (w *Writer) addRecordingISRCRows(rows []model.RecordingISRCRow) error {
 func (w *Writer) addRecordingTagRows(rows []model.RecordingTagRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.RecordingMBID, row.Tag, row.Count})
+		vals = append(vals, recordingTagRowValues(row))
 	}
 	return w.addRows("recording_tags", vals)
 }
@@ -381,7 +499,7 @@ func (w *Writer) addRecordingTagRows(rows []model.RecordingTagRow) error {
 func (w *Writer) addTrackRows(rows []model.TrackRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.MBID, row.ReleaseMBID, row.RecordingMBID, row.MediaPosition, row.Position, row.Number, row.Title, row.Length})
+		vals = append(vals, trackRowValues(row))
 	}
 	return w.addRows("tracks", vals)
 }
@@ -389,9 +507,121 @@ func (w *Writer) addTrackRows(rows []model.TrackRow) error {
 func (w *Writer) addExternalLinkRows(rows []model.ExternalLinkRow) error {
 	vals := make([][]any, 0, len(rows))
 	for _, row := range rows {
-		vals = append(vals, []any{row.EntityType, row.EntityMBID, row.RelType, row.URL})
+		vals = append(vals, externalLinkRowValues(row))
 	}
 	return w.addRows("external_links", vals)
+}
+
+func artistRowValues(row model.ArtistRow) []any {
+	return []any{row.MBID, row.Name, row.SortName, row.Disambiguation, nullIfEmpty(row.Type), nullIfEmpty(row.Country), nullIfEmpty(row.Gender), nullIfEmpty(row.BeginDate), nullIfEmpty(row.EndDate), boolInt(row.Ended), nullIfEmpty(row.AreaMBID), nullIfEmpty(row.AreaName)}
+}
+
+func artistAliasRowValues(row model.ArtistAliasRow) []any {
+	return []any{row.ArtistMBID, row.Name, nullIfEmpty(row.SortName), nullIfEmpty(row.Type), row.Locale, boolInt(row.IsPrimary)}
+}
+
+func artistTagRowValues(row model.ArtistTagRow) []any {
+	return []any{row.ArtistMBID, row.Tag, row.Count}
+}
+
+func artistGenreRowValues(row model.ArtistGenreRow) []any {
+	return []any{row.ArtistMBID, row.GenreMBID, row.GenreName, row.Count}
+}
+
+func artistRelationshipRowValues(row model.ArtistRelationshipRow) []any {
+	return []any{row.ArtistMBID, row.RelatedArtistMBID, row.RelatedArtistName, row.Type, row.Direction, row.BeginDate, row.EndDate, boolInt(row.Ended), row.Attributes}
+}
+
+func labelRowValues(row model.LabelRow) []any {
+	return []any{row.MBID, row.Name, row.SortName, row.Disambiguation, nullIfEmpty(row.Type), row.LabelCode, nullIfEmpty(row.Country), nullIfEmpty(row.BeginDate), nullIfEmpty(row.EndDate), boolInt(row.Ended), nullIfEmpty(row.AreaMBID), nullIfEmpty(row.AreaName)}
+}
+
+func labelAliasRowValues(row model.LabelAliasRow) []any {
+	return []any{row.LabelMBID, row.Name, nullIfEmpty(row.SortName), nullIfEmpty(row.Type), row.Locale, boolInt(row.IsPrimary)}
+}
+
+func labelTagRowValues(row model.LabelTagRow) []any {
+	return []any{row.LabelMBID, row.Tag, row.Count}
+}
+
+func labelGenreRowValues(row model.LabelGenreRow) []any {
+	return []any{row.LabelMBID, row.GenreMBID, row.GenreName, row.Count}
+}
+
+func workRowValues(row model.WorkRow) []any {
+	return []any{row.MBID, row.Title, row.Disambiguation, nullIfEmpty(row.Type), row.Languages}
+}
+
+func workAliasRowValues(row model.WorkAliasRow) []any {
+	return []any{row.WorkMBID, row.Name, nullIfEmpty(row.SortName), nullIfEmpty(row.Type), row.Locale, boolInt(row.IsPrimary)}
+}
+
+func workISWCRowValues(row model.WorkISWCRow) []any {
+	return []any{row.WorkMBID, row.ISWC}
+}
+
+func workTagRowValues(row model.WorkTagRow) []any {
+	return []any{row.WorkMBID, row.Tag, row.Count}
+}
+
+func recordingWorkRowValues(row model.RecordingWorkRow) []any {
+	return []any{row.RecordingMBID, row.WorkMBID, row.Type, row.Attributes}
+}
+
+func releaseGroupRowValues(row model.ReleaseGroupRow) []any {
+	return []any{row.MBID, row.Title, nullIfEmpty(row.PrimaryType), row.Disambiguation, nullIfEmpty(row.FirstReleaseDate)}
+}
+
+func releaseGroupSecondaryTypeRowValues(row model.ReleaseGroupSecondaryTypeRow) []any {
+	return []any{row.ReleaseGroupMBID, row.Type}
+}
+
+func releaseGroupArtistRowValues(row model.ReleaseGroupArtistRow) []any {
+	return []any{row.ReleaseGroupMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position}
+}
+
+func releaseGroupTagRowValues(row model.ReleaseGroupTagRow) []any {
+	return []any{row.ReleaseGroupMBID, row.Tag, row.Count}
+}
+
+func releaseRowValues(row model.ReleaseRow) []any {
+	return []any{row.MBID, row.Title, nullIfEmpty(row.Status), nullIfEmpty(row.Date), nullIfEmpty(row.Country), nullIfEmpty(row.Barcode), nullIfEmpty(row.Packaging), nullIfEmpty(row.Language), nullIfEmpty(row.Script), nullIfEmpty(row.ReleaseGroupMBID)}
+}
+
+func releaseArtistRowValues(row model.ReleaseArtistRow) []any {
+	return []any{row.ReleaseMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position}
+}
+
+func releaseLabelRowValues(row model.ReleaseLabelRow) []any {
+	return []any{row.ReleaseMBID, row.LabelMBID, row.LabelName, row.CatalogNumber}
+}
+
+func releaseMediaRowValues(row model.ReleaseMediaRow) []any {
+	return []any{row.ReleaseMBID, row.Position, nullIfEmpty(row.Format), row.TrackCount}
+}
+
+func recordingRowValues(row model.RecordingRow) []any {
+	return []any{row.MBID, row.Title, row.Length, row.Disambiguation, boolInt(row.Video), nullIfEmpty(row.FirstReleaseDate)}
+}
+
+func recordingArtistRowValues(row model.RecordingArtistRow) []any {
+	return []any{row.RecordingMBID, row.ArtistMBID, row.ArtistName, row.JoinPhrase, row.Position}
+}
+
+func recordingISRCRowValues(row model.RecordingISRCRow) []any {
+	return []any{row.RecordingMBID, row.ISRC}
+}
+
+func recordingTagRowValues(row model.RecordingTagRow) []any {
+	return []any{row.RecordingMBID, row.Tag, row.Count}
+}
+
+func trackRowValues(row model.TrackRow) []any {
+	return []any{row.MBID, row.ReleaseMBID, row.RecordingMBID, row.MediaPosition, row.Position, row.Number, row.Title, row.Length}
+}
+
+func externalLinkRowValues(row model.ExternalLinkRow) []any {
+	return []any{row.EntityType, row.EntityMBID, row.RelType, row.URL}
 }
 
 func nullIfEmpty(v string) any {
