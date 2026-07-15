@@ -28,7 +28,15 @@ type progressSink interface {
 	Add64(int64) error
 }
 
-func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpDir string, verbose bool) (map[string]string, error) {
+type LocalDump struct {
+	Entity      string
+	Chunked     bool
+	ArchivePath string
+	ChunkPaths  []string
+	Meta        ChunkMetadata
+}
+
+func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpDir string, verbose bool) (map[string]LocalDump, error) {
 	if len(dump.Files) == 0 {
 		return nil, fmt.Errorf("no dump files requested")
 	}
@@ -41,15 +49,28 @@ func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpD
 	}
 
 	totalSize, completedSize := int64(0), int64(0)
-	jobs := make([]downloadJob, 0, len(dump.Files))
+	var jobs []downloadJob
 	for _, file := range dump.Files {
+		if file.Chunked() {
+			for _, chunk := range file.Chunks {
+				localPath := filepath.Join(targetDir, file.Entity+".chunks", chunk.Name)
+				totalSize += chunk.Size
+				completedSize += existingBytes(localPath, chunk.Size)
+				jobs = append(jobs, downloadJob{
+					url:       chunk.URL,
+					localPath: localPath,
+					size:      chunk.Size,
+				})
+			}
+			continue
+		}
 		localPath := filepath.Join(targetDir, file.Name)
 		size, _ := probeRemoteSize(ctx, client, file.URL)
 		existing := existingBytes(localPath, size)
 		totalSize += size
 		completedSize += existing
 		jobs = append(jobs, downloadJob{
-			file:      file,
+			url:       file.URL,
 			localPath: localPath,
 			size:      size,
 		})
@@ -72,8 +93,6 @@ func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpD
 		bar = pb
 	}
 
-	results := make(map[string]string, len(jobs))
-	var mu sync.Mutex
 	jobCh := make(chan downloadJob)
 	errCh := make(chan error, 1)
 
@@ -84,7 +103,7 @@ func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpD
 		go func() {
 			defer wg.Done()
 			for job := range jobCh {
-				if err := DownloadFile(ctx, client, job.file.URL, job.localPath, job.size, bar); err != nil {
+				if err := DownloadFile(ctx, client, job.url, job.localPath, job.size, bar); err != nil {
 					cancel()
 					select {
 					case errCh <- err:
@@ -92,9 +111,6 @@ func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpD
 					}
 					return
 				}
-				mu.Lock()
-				results[job.file.Entity] = job.localPath
-				mu.Unlock()
 			}
 		}()
 	}
@@ -130,12 +146,30 @@ func FetchAll(ctx context.Context, client *http.Client, dump ResolvedDump, dumpD
 		wg.Wait()
 		return nil, err
 	case <-done:
-		return results, nil
 	}
+
+	results := make(map[string]LocalDump, len(dump.Files))
+	for _, file := range dump.Files {
+		local := LocalDump{
+			Entity:  file.Entity,
+			Chunked: file.Chunked(),
+			Meta:    file.Meta,
+		}
+		if file.Chunked() {
+			local.ChunkPaths = make([]string, 0, len(file.Chunks))
+			for _, chunk := range file.Chunks {
+				local.ChunkPaths = append(local.ChunkPaths, filepath.Join(targetDir, file.Entity+".chunks", chunk.Name))
+			}
+		} else {
+			local.ArchivePath = filepath.Join(targetDir, file.Name)
+		}
+		results[file.Entity] = local
+	}
+	return results, nil
 }
 
 type downloadJob struct {
-	file      File
+	url       string
 	localPath string
 	size      int64
 }

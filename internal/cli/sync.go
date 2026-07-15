@@ -31,6 +31,7 @@ type syncConfig struct {
 	DumpDir   string
 	KeepDumps bool
 	Entities  string
+	WithPrune bool
 }
 
 func newSyncCmd() *cobra.Command {
@@ -49,12 +50,27 @@ packet per transaction, so an interrupted sync can simply be rerun.
 
 Requires a MetaBrainz Live Data Feed access token (--token or $` + ldfTokenEnv + `).
 
-Incremental JSON dumps carry no deletions or merges; schedule a periodic full
-"mbforge build" to pick those up.`,
+Incremental JSON dumps carry no deletions or merges; pass --with-prune to
+apply those from the RAW replication packets in the same invocation (see
+"mbforge prune"). Sync and prune must not run concurrently, so a single
+invocation with --with-prune is the simplest way to run both hourly.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signalContext(cmd.Context())
 			defer cancel()
-			return runSync(ctx, cfg)
+			if err := runSync(ctx, cfg); err != nil {
+				return err
+			}
+			if !cfg.WithPrune {
+				return nil
+			}
+			return runPrune(ctx, pruneConfig{
+				DBPath:        cfg.DBPath,
+				Token:         cfg.Token,
+				BaseURL:       cfg.BaseURL,
+				DumpDir:       cfg.DumpDir,
+				KeepDumps:     cfg.KeepDumps,
+				ResolveRemote: true,
+			})
 		},
 	}
 
@@ -64,16 +80,14 @@ Incremental JSON dumps carry no deletions or merges; schedule a periodic full
 	cmd.Flags().StringVar(&cfg.DumpDir, "dump-dir", cfg.DumpDir, "Directory to store downloaded packet files")
 	cmd.Flags().BoolVar(&cfg.KeepDumps, "keep-dumps", cfg.KeepDumps, "Keep downloaded packet files after import")
 	cmd.Flags().StringVarP(&cfg.Entities, "entities", "e", cfg.Entities, "Comma-separated entity types to sync")
+	cmd.Flags().BoolVar(&cfg.WithPrune, "with-prune", cfg.WithPrune, "Run \"mbforge prune\" after applying the JSON dump packets")
 	return cmd
 }
 
 func runSync(ctx context.Context, cfg syncConfig) error {
-	token := cfg.Token
-	if token == "" {
-		token = os.Getenv(ldfTokenEnv)
-	}
-	if token == "" {
-		return fmt.Errorf("a Live Data Feed token is required: pass --token or set %s", ldfTokenEnv)
+	token, err := resolveLDFToken(cfg.Token)
+	if err != nil {
+		return err
 	}
 
 	entities, err := parseEntityList(cfg.Entities)

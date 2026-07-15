@@ -10,6 +10,6 @@ func NewRootCmd(version, commit, date string) *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	root.AddCommand(newBuildCmd(), newSyncCmd(), newInfoCmd(), newSearchCmd(), newSearchIndexCmd(), newVersionCmd(version, commit, date))
+	root.AddCommand(newBuildCmd(), newSyncCmd(), newPruneCmd(), newInfoCmd(), newSearchCmd(), newSearchIndexCmd(), newVersionCmd(version, commit, date))
 	return root
 }

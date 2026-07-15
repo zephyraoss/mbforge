@@ -36,6 +36,7 @@ type buildConfig struct {
 	BatchSize         int
 	Entities          string
 	Mirror            string
+	NoChunks          bool
 	Verbose           bool
 	SearchIndex       bool
 	SearchIndexTracks bool
@@ -66,7 +67,8 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&cfg.Workers, "workers", "w", cfg.Workers, "Number of parallel JSON parse workers")
 	cmd.Flags().IntVar(&cfg.BatchSize, "batch-size", cfg.BatchSize, "Rows per INSERT batch")
 	cmd.Flags().StringVarP(&cfg.Entities, "entities", "e", cfg.Entities, "Comma-separated entity types to import")
-	cmd.Flags().StringVar(&cfg.Mirror, "mirror", cfg.Mirror, "Base URL for the MusicBrainz JSON dump mirror")
+	cmd.Flags().StringVar(&cfg.Mirror, "mirror", cfg.Mirror, "Base URL for the MusicBrainz JSON dump mirror; a blob mirror with a SAS query string works")
+	cmd.Flags().BoolVar(&cfg.NoChunks, "no-chunks", cfg.NoChunks, "Ignore <entity>.chunks.json manifests on the mirror and import the original .tar.xz archives")
 	cmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", cfg.Verbose, "Verbose logging with progress bars")
 	cmd.Flags().BoolVar(&cfg.SearchIndex, "search-index", cfg.SearchIndex, "Build the full-text search index after import")
 	cmd.Flags().BoolVar(&cfg.SearchIndexTracks, "search-index-tracks", cfg.SearchIndexTracks, "Include track rows in the search index (large; recordings already cover title search)")
@@ -98,11 +100,17 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 	}
 
 	client := defaultHTTPClient()
-	resolved, err := download.ResolveLatest(ctx, client, cfg.Mirror, entities)
+	resolved, err := download.ResolveLatest(ctx, client, cfg.Mirror, entities, !cfg.NoChunks)
 	if err != nil {
 		return err
 	}
-	log.Printf("resolved latest dump=%s", resolved.Directory)
+	chunkedEntities := 0
+	for _, file := range resolved.Files {
+		if file.Chunked() {
+			chunkedEntities++
+		}
+	}
+	log.Printf("resolved latest dump=%s chunked_entities=%d/%d", resolved.Directory, chunkedEntities, len(resolved.Files))
 
 	localFiles, err := download.FetchAll(ctx, client, resolved, cfg.DumpDir, cfg.Verbose)
 	if err != nil {
@@ -132,13 +140,17 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 
 	meta := model.DumpMetadata{DumpDir: resolved.Directory}
 	for _, entity := range entityOrder {
-		localPath, ok := localFiles[entity]
+		local, ok := localFiles[entity]
 		if !ok {
 			continue
 		}
 		entityStart := time.Now()
-		log.Printf("importing entity=%s archive=%s", entity, localPath)
-		importMeta, err := importEntity(ctx, writer, entity, localPath, cfg.Workers)
+		if local.Chunked {
+			log.Printf("importing entity=%s chunks=%d", entity, len(local.ChunkPaths))
+		} else {
+			log.Printf("importing entity=%s archive=%s", entity, local.ArchivePath)
+		}
+		importMeta, err := importEntity(ctx, writer, entity, local, cfg.Workers)
 		if err != nil {
 			return err
 		}
@@ -188,7 +200,7 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 
 type parseFunc func([]byte) (model.Mutation, error)
 
-func importEntity(ctx context.Context, writer *mbdb.Writer, entity, archivePath string, workers int) (model.DumpMetadata, error) {
+func importEntity(ctx context.Context, writer *mbdb.Writer, entity string, local download.LocalDump, workers int) (model.DumpMetadata, error) {
 	parse, err := parserForEntity(entity)
 	if err != nil {
 		return model.DumpMetadata{}, err
@@ -215,20 +227,35 @@ func importEntity(ctx context.Context, writer *mbdb.Writer, entity, archivePath 
 		})
 	}
 
+	emitLine := func(line []byte) error {
+		payload := append([]byte(nil), line...)
+		select {
+		case lines <- payload:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	var scanWG sync.WaitGroup
 	scanWG.Add(1)
 	go func() {
 		defer scanWG.Done()
 		defer close(lines)
-		scanMeta, err := parser.ScanEntityArchive(ctx, archivePath, entity, func(line []byte) error {
-			payload := append([]byte(nil), line...)
-			select {
-			case lines <- payload:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
+		if local.Chunked {
+			if err := parser.ScanChunkFiles(ctx, local.ChunkPaths, workers, emitLine); err != nil {
+				setErr(err)
+				return
 			}
-		})
+			meta = model.DumpMetadata{
+				JSONSchemaNumber:    local.Meta.JSONSchemaNumber,
+				ReplicationSequence: local.Meta.ReplicationSequence,
+				SchemaSequence:      local.Meta.SchemaSequence,
+				DumpTimestamp:       local.Meta.DumpTimestamp,
+			}
+			return
+		}
+		scanMeta, err := parser.ScanEntityArchive(ctx, local.ArchivePath, entity, emitLine)
 		if err != nil {
 			setErr(err)
 			return

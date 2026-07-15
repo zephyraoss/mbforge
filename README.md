@@ -1,10 +1,10 @@
 # mbforge
 
-`mbforge` is a Go CLI that downloads the latest MusicBrainz JSON dump and builds a flattened libSQL metadata database for Oxygen/Chromakopia. `mbforge sync` keeps that database current by applying the hourly incremental JSON dumps from the MusicBrainz Live Data Feed.
+`mbforge` is a Go CLI that downloads the latest MusicBrainz JSON dump and builds a flattened libSQL metadata database for Oxygen/Chromakopia. `mbforge sync` keeps that database current by applying the hourly incremental JSON dumps from the MusicBrainz Live Data Feed, and `mbforge prune` applies the deletions and merges those dumps cannot convey.
 
 It is intentionally narrow:
 
-- Full builds plus hourly incremental sync (no deletions/merges, see below)
+- Full builds plus hourly incremental sync and prune
 - No raw JSON blobs
 - No annotation import
 
@@ -15,6 +15,24 @@ It is intentionally narrow:
 - Resolves the latest dump directory from `LATEST`
 - Downloads the selected `*.tar.xz` archives into `--dump-dir`
 - Streams `xz -> tar -> JSONL` without extracting the full dumps to disk
+- `--mirror` accepts any base URL serving the upstream path layout (`LATEST` + `<dir>/<entity>.tar.xz`), including an Azure blob container URL carrying a SAS query string, which is appended to every request
+- If the mirror also serves `<dir>/<entity>.chunks.json`, the entity is downloaded as pre-split zstd chunks (`<dir>/<entity>.chunks/<name>.jsonl.zst`) and decompressed on all cores instead of one serial xz stream; pass `--no-chunks` to force the original archives. The manifest format is:
+
+  ```json
+  {
+    "format": "mbforge-chunks/1",
+    "entity": "release",
+    "metadata": {
+      "json_dumps_schema_number": "...",  // JSON_DUMPS_SCHEMA_NUMBER
+      "replication_sequence": "...",      // REPLICATION_SEQUENCE
+      "schema_sequence": "...",           // SCHEMA_SEQUENCE
+      "timestamp": "..."                  // TIMESTAMP
+    },
+    "chunks": [{"name": "000000.jsonl.zst", "size": 123}]
+  }
+  ```
+
+  Each chunk is a standalone zstd stream of complete JSONL lines from the tar's `mbdump/<entity>` member (lines never span chunks; ordering across chunks is irrelevant since import is unordered). `metadata` carries the four dump metadata files from the tar root, so the chunked path never touches the tar.
 - Imports artists (incl. artist–artist relationships), labels, works (incl. recording→work links), release groups, releases, embedded recordings/tracks, and standalone recordings
 - Defers secondary index creation until after the bulk load
 - Optionally builds a full-text search index with `--search-index`; track rows are excluded by default (see `mbforge search-index` below), pass `--search-index-tracks` to include them
@@ -32,8 +50,18 @@ It is intentionally narrow:
 - Updates the full-text search index rows for changed entities when the search index exists; track rows are only refreshed when `_meta.search_index_tracks` is not `"false"`, so an index built without tracks stays that way
 - Creates any tables added by newer mbforge versions (labels, works, relationship link tables) on databases built before them, so older databases keep syncing; their historical label/work rows still require a full rebuild to backfill
 - Stops with an error instructing a full rebuild if a packet's `SCHEMA_SEQUENCE` differs from `_meta.schema_sequence`
+- Pass `--with-prune` to run `mbforge prune` afterwards in the same invocation
 
-Known limitation: the incremental JSON dumps do not carry deletions or merges, so removed or merged entities linger until the next full rebuild. The operational answer is a periodic `mbforge build` (for example monthly) layered under hourly `mbforge sync` runs.
+The incremental JSON dumps do not carry deletions or merges; `mbforge prune` covers those. With sync and prune both running hourly, full rebuilds are only needed when the MusicBrainz schema changes (a `SCHEMA_SEQUENCE` bump, roughly twice a year) or for disaster recovery.
+
+`mbforge prune`
+
+- Applies entity deletions and merges from the hourly RAW replication packets (`replication-<SEQ>-v2.tar.bz2`, dbmirror2 format) of the MusicBrainz Live Data Feed, using the same access token as `sync`
+- Deletes removed artists, labels, works, release groups, releases, recordings, and tracks, including their child rows and search-index rows
+- Records merges in a `gid_redirects` table (`entity_type`, `old_mbid`, `new_mbid`) so chromakopia's catalog can forward lookups of merged MBIDs, and deletes the merged-away entity's rows
+- Resumes from `_meta.prune_replication_sequence`, seeded from `_meta.replication_sequence` on the first run; applies one packet per transaction, so an interrupted prune can simply be rerun
+- Packets reference merge targets by MusicBrainz row id, which the mbforge schema does not store. Most targets resolve from row data in the same packet; the rest are kept in `gid_redirects_pending`, retried against ids harvested from later packets (`mb_row_ids`), and finally resolved via the MusicBrainz web service at one request per second (`--resolve-remote=false` to disable)
+- Must not run concurrently with `sync` against the same database: both are single-writer jobs. Run them back to back from one scheduler slot, or simply use `mbforge sync --with-prune`
 
 `mbforge info`
 
@@ -91,13 +119,14 @@ mbforge build \
   --entities artist,release-group
 ```
 
-Apply the latest Live Data Feed packets to an existing database:
+Apply the latest Live Data Feed packets (including deletions and merges) to an existing database:
 
 ```bash
 export MBFORGE_LDF_TOKEN=your-metabrainz-token
 mbforge sync \
   --db /mnt/nvme/metadata.db \
-  --dump-dir /mnt/nvme/mbdump
+  --dump-dir /mnt/nvme/mbdump \
+  --with-prune
 ```
 
 Inspect a finished database:

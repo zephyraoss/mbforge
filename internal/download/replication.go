@@ -19,7 +19,10 @@ import (
 
 const DefaultReplicationBaseURL = "https://metabrainz.org/api/musicbrainz"
 
-var ErrPacketEntityNotFound = errors.New("packet has no dump for entity")
+var (
+	ErrPacketEntityNotFound      = errors.New("packet has no dump for entity")
+	ErrReplicationPacketNotFound = errors.New("replication packet not found")
+)
 
 var (
 	packetNamePattern = regexp.MustCompile(`replication-(\d+)`)
@@ -100,7 +103,34 @@ func FetchPacketEntity(ctx context.Context, client *http.Client, baseURL, token 
 
 	displayURL := strings.TrimRight(baseURL, "/") + "/json-dumps/" + PacketDirName(sequence) + "/" + name
 	sourceURL := displayURL + "?token=" + url.QueryEscape(token)
+	return fetchWithRetries(ctx, client, sourceURL, displayURL, dst)
+}
 
+func ReplicationPacketName(sequence int) string {
+	return fmt.Sprintf("replication-%d-v2.tar.bz2", sequence)
+}
+
+func FetchReplicationPacket(ctx context.Context, client *http.Client, baseURL, token string, sequence int, dumpDir string) (string, error) {
+	name := ReplicationPacketName(sequence)
+	dst := filepath.Join(dumpDir, name)
+	if info, err := os.Stat(dst); err == nil && info.Size() > 0 {
+		log.Printf("cache hit for %s (%d bytes)", name, info.Size())
+		return dst, nil
+	}
+	if err := os.MkdirAll(dumpDir, 0o755); err != nil {
+		return "", err
+	}
+
+	displayURL := strings.TrimRight(baseURL, "/") + "/" + name
+	sourceURL := displayURL + "?token=" + url.QueryEscape(token)
+	localPath, err := fetchWithRetries(ctx, client, sourceURL, displayURL, dst)
+	if errors.Is(err, ErrPacketEntityNotFound) {
+		return "", fmt.Errorf("%w: %s", ErrReplicationPacketNotFound, displayURL)
+	}
+	return localPath, err
+}
+
+func fetchWithRetries(ctx context.Context, client *http.Client, sourceURL, displayURL, dst string) (string, error) {
 	backoff := initialRetryBackoff
 	for attempt := 1; attempt <= maxDownloadAttempts; attempt++ {
 		retryable, err := packetDownloadAttempt(ctx, client, sourceURL, displayURL, dst)
