@@ -211,6 +211,16 @@ JOIN releases r ON r.mbid = t.release_mbid`,
 	},
 }
 
+const MetaKeySearchIndexTracks = "search_index_tracks"
+
+type SearchIndexOptions struct {
+	IncludeTracks bool
+}
+
+func SearchIndexIncludesTracks(meta map[string]string) bool {
+	return meta[MetaKeySearchIndexTracks] != "false"
+}
+
 func SearchIndexExists(ctx context.Context, db *sql.DB) (bool, error) {
 	var found string
 	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'search_fts'`).Scan(&found)
@@ -223,9 +233,9 @@ func SearchIndexExists(ctx context.Context, db *sql.DB) (bool, error) {
 	return found == "search_fts", nil
 }
 
-func RebuildSearchIndex(ctx context.Context, db *sql.DB, logf func(string, ...any)) error {
+func RebuildSearchIndex(ctx context.Context, db *sql.DB, opts SearchIndexOptions, logf func(string, ...any)) error {
 	if logf != nil {
-		logf("rebuilding search index")
+		logf("rebuilding search index include_tracks=%t", opts.IncludeTracks)
 	}
 
 	for _, stmt := range []string{
@@ -238,6 +248,12 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, logf func(string, ...an
 	}
 
 	for _, stage := range searchIndexPopulateStages {
+		if stage.entityType == "track" && !opts.IncludeTracks {
+			if logf != nil {
+				logf("search index stage=%s skipped", stage.name)
+			}
+			continue
+		}
 		if logf != nil {
 			logf("search index stage=%s", stage.name)
 		}
@@ -252,10 +268,18 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, logf func(string, ...an
 	if _, err := db.ExecContext(ctx, `INSERT INTO search_fts(search_fts) VALUES('optimize');`); err != nil {
 		return fmt.Errorf("optimize search index: %w", err)
 	}
+
+	if _, err := db.ExecContext(ctx, createMetaTable); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `INSERT OR REPLACE INTO _meta(key, value) VALUES(?, ?)`,
+		MetaKeySearchIndexTracks, fmt.Sprintf("%t", opts.IncludeTracks)); err != nil {
+		return fmt.Errorf("record search index options: %w", err)
+	}
 	return nil
 }
 
-func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string][]string) error {
+func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string][]string, includeTracks bool) error {
 	deleteStmt, err := tx.PrepareContext(ctx, `DELETE FROM search_fts WHERE entity_type = ? AND entity_mbid = ?`)
 	if err != nil {
 		return err
@@ -263,6 +287,9 @@ func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string]
 	defer deleteStmt.Close()
 
 	for _, stage := range searchIndexPopulateStages {
+		if stage.entityType == "track" && !includeTracks {
+			continue
+		}
 		mbids := changed[stage.entityType]
 		if len(mbids) == 0 {
 			continue

@@ -29,15 +29,16 @@ import (
 var entityOrder = []string{"artist", "label", "work", "release-group", "release", "recording"}
 
 type buildConfig struct {
-	OutputPath  string
-	DumpDir     string
-	KeepDumps   bool
-	Workers     int
-	BatchSize   int
-	Entities    string
-	Mirror      string
-	Verbose     bool
-	SearchIndex bool
+	OutputPath        string
+	DumpDir           string
+	KeepDumps         bool
+	Workers           int
+	BatchSize         int
+	Entities          string
+	Mirror            string
+	Verbose           bool
+	SearchIndex       bool
+	SearchIndexTracks bool
 }
 
 func newBuildCmd() *cobra.Command {
@@ -68,6 +69,7 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.Mirror, "mirror", cfg.Mirror, "Base URL for the MusicBrainz JSON dump mirror")
 	cmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", cfg.Verbose, "Verbose logging with progress bars")
 	cmd.Flags().BoolVar(&cfg.SearchIndex, "search-index", cfg.SearchIndex, "Build the full-text search index after import")
+	cmd.Flags().BoolVar(&cfg.SearchIndexTracks, "search-index-tracks", cfg.SearchIndexTracks, "Include track rows in the search index (large; recordings already cover title search)")
 	return cmd
 }
 
@@ -157,16 +159,16 @@ func runBuild(ctx context.Context, cfg buildConfig) error {
 		return err
 	}
 	log.Printf("secondary indexes complete")
-	if cfg.SearchIndex {
-		log.Printf("creating search index")
-		if err := mbdb.RebuildSearchIndex(ctx, db, log.Printf); err != nil {
-			return err
-		}
-		log.Printf("search index complete")
-	}
 	log.Printf("writing _meta")
 	if err := mbdb.WriteMeta(ctx, db, meta); err != nil {
 		return err
+	}
+	if cfg.SearchIndex {
+		log.Printf("creating search index")
+		if err := mbdb.RebuildSearchIndex(ctx, db, mbdb.SearchIndexOptions{IncludeTracks: cfg.SearchIndexTracks}, log.Printf); err != nil {
+			return err
+		}
+		log.Printf("search index complete")
 	}
 	log.Printf("running PRAGMA optimize and VACUUM")
 	if err := mbdb.Finalize(ctx, db); err != nil {

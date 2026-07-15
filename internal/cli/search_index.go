@@ -12,6 +12,7 @@ import (
 
 type searchIndexConfig struct {
 	DBPath string
+	Tracks bool
 }
 
 func newSearchIndexCmd() *cobra.Command {
@@ -28,6 +29,7 @@ func newSearchIndexCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&cfg.DBPath, "db", cfg.DBPath, "Path to the database")
+	cmd.Flags().BoolVar(&cfg.Tracks, "search-index-tracks", cfg.Tracks, "Include track rows in the search index (large; recordings already cover title search)")
 	return cmd
 }
 
@@ -44,5 +46,5 @@ func runSearchIndex(ctx context.Context, cfg searchIndexConfig) error {
 		return err
 	}
 
-	return mbdb.RebuildSearchIndex(ctx, db, log.Printf)
+	return mbdb.RebuildSearchIndex(ctx, db, mbdb.SearchIndexOptions{IncludeTracks: cfg.Tracks}, log.Printf)
 }

@@ -447,7 +447,7 @@ func TestRefreshSearchIndexRowsUpdatesAndRemoves(t *testing.T) {
 	applyUpsert(t, db, model.Mutation{
 		Artists: []model.ArtistRow{{MBID: "a1", Name: "Original Artist", SortName: "Artist, Original"}},
 	}, "artist")
-	if err := RebuildSearchIndex(ctx, db, nil); err != nil {
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: true}, nil); err != nil {
 		t.Fatalf("RebuildSearchIndex: %v", err)
 	}
 
@@ -463,7 +463,7 @@ func TestRefreshSearchIndexRowsUpdatesAndRemoves(t *testing.T) {
 		t.Fatalf("insert stale row: %v", err)
 	}
 	changed["artist"] = append(changed["artist"], "gone")
-	if err := RefreshSearchIndexRows(ctx, tx, changed); err != nil {
+	if err := RefreshSearchIndexRows(ctx, tx, changed, true); err != nil {
 		t.Fatalf("RefreshSearchIndexRows: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -479,5 +479,50 @@ func TestRefreshSearchIndexRowsUpdatesAndRemoves(t *testing.T) {
 	}
 	if got := countRows(t, db, `SELECT COUNT(*) FROM search_fts WHERE entity_mbid = 'gone'`); got != 0 {
 		t.Fatalf("stale fts rows: got %d want 0", got)
+	}
+}
+
+func TestRefreshSearchIndexRowsHonorsTrackExclusion(t *testing.T) {
+	db := newUpsertTestDB(t)
+	ctx := context.Background()
+
+	changed := applyUpsert(t, db, model.Mutation{
+		Releases:   []model.ReleaseRow{{MBID: "rel1", Title: "Release"}},
+		Recordings: []model.RecordingRow{{MBID: "rec1", Title: "Song"}},
+		Tracks:     []model.TrackRow{{MBID: "t1", ReleaseMBID: "rel1", RecordingMBID: "rec1", MediaPosition: 1, Position: 1, Number: "1", Title: "Song"}},
+	}, "release")
+	if len(changed["track"]) == 0 {
+		t.Fatalf("expected changed tracks, got %v", changed)
+	}
+
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: false}, nil); err != nil {
+		t.Fatalf("RebuildSearchIndex: %v", err)
+	}
+
+	refresh := func(includeTracks bool) {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("BeginTx: %v", err)
+		}
+		if err := RefreshSearchIndexRows(ctx, tx, changed, includeTracks); err != nil {
+			t.Fatalf("RefreshSearchIndexRows: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("Commit: %v", err)
+		}
+	}
+
+	refresh(false)
+	if got := countRows(t, db, `SELECT COUNT(*) FROM search_fts WHERE entity_type = 'track'`); got != 0 {
+		t.Fatalf("track fts rows after excluded refresh: got %d want 0", got)
+	}
+	if got := countRows(t, db, `SELECT COUNT(*) FROM search_fts WHERE entity_type = 'release' AND entity_mbid = 'rel1'`); got != 1 {
+		t.Fatalf("release fts rows after excluded refresh: got %d want 1", got)
+	}
+
+	refresh(true)
+	if got := countRows(t, db, `SELECT COUNT(*) FROM search_fts WHERE entity_type = 'track' AND entity_mbid = 't1'`); got != 1 {
+		t.Fatalf("track fts rows after included refresh: got %d want 1", got)
 	}
 }

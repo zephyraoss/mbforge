@@ -127,13 +127,14 @@ func runSync(ctx context.Context, cfg syncConfig) error {
 	if err != nil {
 		return err
 	}
+	searchIndexTracks := mbdb.SearchIndexIncludesTracks(meta)
 
 	if err := os.MkdirAll(cfg.DumpDir, 0o755); err != nil {
 		return err
 	}
 
 	for seq := cursor + 1; seq <= current; seq++ {
-		if err := applySyncPacket(ctx, client, db, cfg, token, entities, seq, schemaSequence, hasSearchIndex); err != nil {
+		if err := applySyncPacket(ctx, client, db, cfg, token, entities, seq, schemaSequence, hasSearchIndex, searchIndexTracks); err != nil {
 			return fmt.Errorf("apply packet %d: %w", seq, err)
 		}
 	}
@@ -145,7 +146,7 @@ func runSync(ctx context.Context, cfg syncConfig) error {
 	return nil
 }
 
-func applySyncPacket(ctx context.Context, client *http.Client, db *sql.DB, cfg syncConfig, token string, entities []string, seq int, schemaSequence string, hasSearchIndex bool) error {
+func applySyncPacket(ctx context.Context, client *http.Client, db *sql.DB, cfg syncConfig, token string, entities []string, seq int, schemaSequence string, hasSearchIndex, searchIndexTracks bool) error {
 	packetStart := time.Now()
 
 	localFiles := make(map[string]string, len(entities))
@@ -204,7 +205,7 @@ func applySyncPacket(ctx context.Context, client *http.Client, db *sql.DB, cfg s
 
 	changed := writer.Changed()
 	if hasSearchIndex {
-		if err := mbdb.RefreshSearchIndexRows(ctx, tx, changed); err != nil {
+		if err := mbdb.RefreshSearchIndexRows(ctx, tx, changed, searchIndexTracks); err != nil {
 			return err
 		}
 	}

@@ -2,19 +2,21 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/zephyraoss/mbforge/internal/libsqlutil"
 )
 
-func TestRebuildSearchIndexCreatesFTSMatches(t *testing.T) {
+func newSearchIndexTestDB(t *testing.T) *sql.DB {
+	t.Helper()
 	ctx := context.Background()
 
 	db, err := libsqlutil.OpenLocal(":memory:")
 	if err != nil {
 		t.Fatalf("OpenLocal: %v", err)
 	}
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 
 	if err := CreateSchema(ctx, db); err != nil {
 		t.Fatalf("CreateSchema: %v", err)
@@ -23,10 +25,13 @@ func TestRebuildSearchIndexCreatesFTSMatches(t *testing.T) {
 	stmts := []string{
 		`INSERT INTO artists(mbid, name, sort_name, type, country) VALUES('artist-1', 'Nine Inch Nails', 'Nine Inch Nails', 'Group', 'US')`,
 		`INSERT INTO artist_aliases(artist_mbid, name, locale, is_primary) VALUES('artist-1', 'NIN', '', 1)`,
+		`INSERT INTO release_groups(mbid, title, primary_type, first_release_date) VALUES('rg-1', 'The Downward Spiral', 'Album', '1994-03-08')`,
+		`INSERT INTO release_group_artists(release_group_mbid, artist_mbid, artist_name, join_phrase, position) VALUES('rg-1', 'artist-1', 'Nine Inch Nails', '', 1)`,
 		`INSERT INTO releases(mbid, title, date, country, barcode) VALUES('release-1', 'The Downward Spiral', '1994-03-08', 'US', '123456789012')`,
 		`INSERT INTO release_artists(release_mbid, artist_mbid, artist_name, join_phrase, position) VALUES('release-1', 'artist-1', 'Nine Inch Nails', '', 1)`,
 		`INSERT INTO recordings(mbid, title, first_release_date) VALUES('recording-1', 'Closer', '1994-03-08')`,
 		`INSERT INTO recording_artists(recording_mbid, artist_mbid, artist_name, join_phrase, position) VALUES('recording-1', 'artist-1', 'Nine Inch Nails', '', 1)`,
+		`INSERT INTO tracks(mbid, release_mbid, recording_mbid, media_position, position, number, title) VALUES('track-1', 'release-1', 'recording-1', 1, 9, '9', 'Closer')`,
 		`INSERT INTO labels(mbid, name, sort_name, type, country) VALUES('label-1', 'Nothing Records', 'Nothing Records', 'Original Production', 'US')`,
 		`INSERT INTO label_aliases(label_mbid, name, locale, is_primary) VALUES('label-1', 'Nothing', '', 1)`,
 		`INSERT INTO works(mbid, title, type, languages) VALUES('work-1', 'Closer', 'Song', 'eng')`,
@@ -38,8 +43,46 @@ func TestRebuildSearchIndexCreatesFTSMatches(t *testing.T) {
 			t.Fatalf("exec %q: %v", stmt, err)
 		}
 	}
+	return db
+}
 
-	if err := RebuildSearchIndex(ctx, db, nil); err != nil {
+func countFTSRowsByType(t *testing.T, db *sql.DB) map[string]int {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), `SELECT entity_type, COUNT(*) FROM search_fts GROUP BY entity_type`)
+	if err != nil {
+		t.Fatalf("count search_fts rows: %v", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]int)
+	for rows.Next() {
+		var entityType string
+		var count int
+		if err := rows.Scan(&entityType, &count); err != nil {
+			t.Fatalf("scan count: %v", err)
+		}
+		out[entityType] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return out
+}
+
+func readMetaValue(t *testing.T, db *sql.DB, key string) string {
+	t.Helper()
+	var value string
+	if err := db.QueryRowContext(context.Background(), `SELECT value FROM _meta WHERE key = ?`, key).Scan(&value); err != nil {
+		t.Fatalf("read _meta %s: %v", key, err)
+	}
+	return value
+}
+
+func TestRebuildSearchIndexWithTracks(t *testing.T) {
+	ctx := context.Background()
+	db := newSearchIndexTestDB(t)
+
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: true}, nil); err != nil {
 		t.Fatalf("RebuildSearchIndex: %v", err)
 	}
 
@@ -49,6 +92,26 @@ func TestRebuildSearchIndexCreatesFTSMatches(t *testing.T) {
 	}
 	if !ok {
 		t.Fatalf("expected search index to exist")
+	}
+
+	want := map[string]int{
+		"artist":        1,
+		"label":         1,
+		"work":          1,
+		"release_group": 1,
+		"release":       1,
+		"recording":     1,
+		"track":         1,
+	}
+	got := countFTSRowsByType(t, db)
+	for entityType, count := range want {
+		if got[entityType] != count {
+			t.Fatalf("fts rows for %s: got %d want %d", entityType, got[entityType], count)
+		}
+	}
+
+	if value := readMetaValue(t, db, MetaKeySearchIndexTracks); value != "true" {
+		t.Fatalf("_meta %s: got %q want %q", MetaKeySearchIndexTracks, value, "true")
 	}
 
 	var count int
@@ -70,5 +133,43 @@ func TestRebuildSearchIndexCreatesFTSMatches(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("work fts matches: got %d want 1", count)
+	}
+}
+
+func TestRebuildSearchIndexWithoutTracks(t *testing.T) {
+	ctx := context.Background()
+	db := newSearchIndexTestDB(t)
+
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: true}, nil); err != nil {
+		t.Fatalf("RebuildSearchIndex with tracks: %v", err)
+	}
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: false}, nil); err != nil {
+		t.Fatalf("RebuildSearchIndex without tracks: %v", err)
+	}
+
+	got := countFTSRowsByType(t, db)
+	if got["track"] != 0 {
+		t.Fatalf("fts rows for track: got %d want 0", got["track"])
+	}
+	for _, entityType := range []string{"artist", "label", "work", "release_group", "release", "recording"} {
+		if got[entityType] != 1 {
+			t.Fatalf("fts rows for %s: got %d want 1", entityType, got[entityType])
+		}
+	}
+
+	if value := readMetaValue(t, db, MetaKeySearchIndexTracks); value != "false" {
+		t.Fatalf("_meta %s: got %q want %q", MetaKeySearchIndexTracks, value, "false")
+	}
+}
+
+func TestSearchIndexIncludesTracks(t *testing.T) {
+	if !SearchIndexIncludesTracks(map[string]string{}) {
+		t.Fatalf("missing key should default to including tracks")
+	}
+	if !SearchIndexIncludesTracks(map[string]string{MetaKeySearchIndexTracks: "true"}) {
+		t.Fatalf("explicit true should include tracks")
+	}
+	if SearchIndexIncludesTracks(map[string]string{MetaKeySearchIndexTracks: "false"}) {
+		t.Fatalf("explicit false should exclude tracks")
 	}
 }

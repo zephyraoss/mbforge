@@ -17,7 +17,7 @@ It is intentionally narrow:
 - Streams `xz -> tar -> JSONL` without extracting the full dumps to disk
 - Imports artists (incl. artist–artist relationships), labels, works (incl. recording→work links), release groups, releases, embedded recordings/tracks, and standalone recordings
 - Defers secondary index creation until after the bulk load
-- Optionally builds a full-text search index with `--search-index`
+- Optionally builds a full-text search index with `--search-index`; track rows are excluded by default (see `mbforge search-index` below), pass `--search-index-tracks` to include them
 - Writes `_meta` with dump and replication metadata
 - Runs `PRAGMA optimize` and `VACUUM`
 
@@ -29,7 +29,7 @@ It is intentionally narrow:
 - Applies one packet per transaction and advances `_meta.replication_sequence` in the same transaction, so an interrupted sync can simply be rerun
 - A 404 for an entity archive means the packet has no changes for that entity and is skipped
 - Runs in WAL mode with `synchronous=NORMAL`, so the database stays safe for concurrent readers (the aggressive build-time pragmas are never used); note the database file remains in WAL mode afterwards
-- Updates the full-text search index rows for changed entities when the search index exists
+- Updates the full-text search index rows for changed entities when the search index exists; track rows are only refreshed when `_meta.search_index_tracks` is not `"false"`, so an index built without tracks stays that way
 - Creates any tables added by newer mbforge versions (labels, works, relationship link tables) on databases built before them, so older databases keep syncing; their historical label/work rows still require a full rebuild to backfill
 - Stops with an error instructing a full rebuild if a packet's `SCHEMA_SEQUENCE` differs from `_meta.schema_sequence`
 
@@ -46,11 +46,14 @@ Known limitation: the incremental JSON dumps do not carry deletions or merges, s
 - Labels and works are only covered by the fast indexed path, not the slow SQL fallback
 - Uses the full-text search index when present
 - Falls back to the older slower SQL path when the search index is absent
+- With an index built without track rows (the default), the fast path returns no track results; recording rows cover title search, and the slow SQL fallback still searches tracks when no index exists
 
 `mbforge search-index`
 
 - Builds or rebuilds the full-text search index on an existing database
 - Useful when you already finished a long `build` run without `--search-index`
+- Excludes track rows by default: they are near-duplicates of recording titles and roughly 57M of the ~91M index rows, so leaving them out keeps the index small enough for a small node's page cache; pass `--search-index-tracks` to include them
+- Records the choice in `_meta.search_index_tracks` so `mbforge sync` does not reintroduce track rows on an index built without them
 
 `mbforge version`
 
