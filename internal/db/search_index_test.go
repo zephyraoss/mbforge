@@ -173,3 +173,134 @@ func TestSearchIndexIncludesTracks(t *testing.T) {
 		t.Fatalf("explicit false should exclude tracks")
 	}
 }
+
+func readMapEntries(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), `SELECT entity_type, entity_mbid, fts_rowid FROM search_fts_map`)
+	if err != nil {
+		t.Fatalf("read search_fts_map: %v", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var entityType, mbid string
+		var rowid int64
+		if err := rows.Scan(&entityType, &mbid, &rowid); err != nil {
+			t.Fatalf("scan map entry: %v", err)
+		}
+		out[entityType+"/"+mbid] = rowid
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("map rows: %v", err)
+	}
+	return out
+}
+
+func readFTSEntries(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), `SELECT entity_type, entity_mbid, rowid FROM search_fts`)
+	if err != nil {
+		t.Fatalf("read search_fts: %v", err)
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var entityType, mbid string
+		var rowid int64
+		if err := rows.Scan(&entityType, &mbid, &rowid); err != nil {
+			t.Fatalf("scan fts entry: %v", err)
+		}
+		out[entityType+"/"+mbid] = rowid
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("fts rows: %v", err)
+	}
+	return out
+}
+
+func requireMapMatchesFTS(t *testing.T, db *sql.DB) {
+	t.Helper()
+	fts := readFTSEntries(t, db)
+	mapped := readMapEntries(t, db)
+	if len(fts) != len(mapped) {
+		t.Fatalf("map has %d entries, fts has %d", len(mapped), len(fts))
+	}
+	for key, rowid := range fts {
+		if mapped[key] != rowid {
+			t.Fatalf("map entry %s = rowid %d, fts has rowid %d", key, mapped[key], rowid)
+		}
+	}
+}
+
+func TestRefreshSearchIndexRowsMaintainsMap(t *testing.T) {
+	ctx := context.Background()
+	db := newSearchIndexTestDB(t)
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: true}, nil); err != nil {
+		t.Fatalf("RebuildSearchIndex: %v", err)
+	}
+	requireMapMatchesFTS(t, db)
+
+	stmts := []string{
+		`UPDATE artists SET name = 'Renamed Artist' WHERE mbid = 'artist-1'`,
+		`DELETE FROM label_aliases WHERE label_mbid = 'label-1'`,
+		`DELETE FROM labels WHERE mbid = 'label-1'`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	changed := map[string][]string{
+		"artist": {"artist-1"},
+		"label":  {"label-1"},
+	}
+	if err := RefreshSearchIndexRows(ctx, tx, changed, true); err != nil {
+		t.Fatalf("RefreshSearchIndexRows: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	fts := readFTSEntries(t, db)
+	if _, ok := fts["label/label-1"]; ok {
+		t.Fatal("deleted label still present in search_fts")
+	}
+	var heading string
+	if err := db.QueryRowContext(ctx, `SELECT heading FROM search_fts WHERE rowid = ?`, fts["artist/artist-1"]).Scan(&heading); err != nil {
+		t.Fatalf("read refreshed artist row: %v", err)
+	}
+	if heading != "Renamed Artist" {
+		t.Fatalf("refreshed artist heading = %q", heading)
+	}
+	requireMapMatchesFTS(t, db)
+}
+
+func TestEnsureSearchIndexMapMigratesAndIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	db := newSearchIndexTestDB(t)
+	if err := RebuildSearchIndex(ctx, db, SearchIndexOptions{IncludeTracks: true}, nil); err != nil {
+		t.Fatalf("RebuildSearchIndex: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE search_fts_map`); err != nil {
+		t.Fatalf("drop map: %v", err)
+	}
+
+	if err := EnsureSearchIndexMap(ctx, db, nil); err != nil {
+		t.Fatalf("EnsureSearchIndexMap: %v", err)
+	}
+	requireMapMatchesFTS(t, db)
+
+	before := readMapEntries(t, db)
+	if err := EnsureSearchIndexMap(ctx, db, nil); err != nil {
+		t.Fatalf("EnsureSearchIndexMap second call: %v", err)
+	}
+	after := readMapEntries(t, db)
+	if len(before) != len(after) {
+		t.Fatalf("second EnsureSearchIndexMap changed the map: %d -> %d entries", len(before), len(after))
+	}
+}

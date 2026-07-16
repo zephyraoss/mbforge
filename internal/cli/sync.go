@@ -142,6 +142,11 @@ func runSync(ctx context.Context, cfg syncConfig) error {
 		return err
 	}
 	searchIndexTracks := mbdb.SearchIndexIncludesTracks(meta)
+	if hasSearchIndex {
+		if err := mbdb.EnsureSearchIndexMap(ctx, db, log.Printf); err != nil {
+			return err
+		}
+	}
 
 	if err := os.MkdirAll(cfg.DumpDir, 0o755); err != nil {
 		return err

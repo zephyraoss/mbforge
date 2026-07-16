@@ -132,6 +132,11 @@ func runPrune(ctx context.Context, cfg pruneConfig) error {
 		return err
 	}
 	searchIndexTracks := mbdb.SearchIndexIncludesTracks(meta)
+	if hasSearchIndex {
+		if err := mbdb.EnsureSearchIndexMap(ctx, db, log.Printf); err != nil {
+			return err
+		}
+	}
 
 	client := defaultHTTPClient()
 	current, err := download.FetchReplicationInfo(ctx, client, cfg.BaseURL, token)

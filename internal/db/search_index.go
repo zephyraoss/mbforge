@@ -17,6 +17,17 @@ CREATE VIRTUAL TABLE search_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 2'
 );`
 
+const createSearchMapSQL = `
+CREATE TABLE IF NOT EXISTS search_fts_map (
+    entity_type TEXT NOT NULL,
+    entity_mbid TEXT NOT NULL,
+    fts_rowid INTEGER NOT NULL
+);`
+
+const createSearchMapIndexSQL = `CREATE INDEX IF NOT EXISTS idx_search_fts_map_entity ON search_fts_map(entity_type, entity_mbid);`
+
+const populateSearchMapSQL = `INSERT INTO search_fts_map(entity_type, entity_mbid, fts_rowid) SELECT entity_type, entity_mbid, rowid FROM search_fts;`
+
 var searchIndexPopulateStages = []struct {
 	name       string
 	entityType string
@@ -240,6 +251,7 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, opts SearchIndexOptions
 
 	for _, stmt := range []string{
 		`DROP TABLE IF EXISTS search_fts;`,
+		`DROP TABLE IF EXISTS search_fts_map;`,
 		createSearchFTSSQL,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -269,6 +281,15 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, opts SearchIndexOptions
 		return fmt.Errorf("optimize search index: %w", err)
 	}
 
+	if logf != nil {
+		logf("search index row map")
+	}
+	for _, stmt := range []string{createSearchMapSQL, populateSearchMapSQL, createSearchMapIndexSQL} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("build search index row map: %w", err)
+		}
+	}
+
 	if _, err := db.ExecContext(ctx, createMetaTable); err != nil {
 		return err
 	}
@@ -279,12 +300,58 @@ func RebuildSearchIndex(ctx context.Context, db *sql.DB, opts SearchIndexOptions
 	return nil
 }
 
-func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string][]string, includeTracks bool) error {
-	deleteStmt, err := tx.PrepareContext(ctx, `DELETE FROM search_fts WHERE entity_type = ? AND entity_mbid = ?`)
+func EnsureSearchIndexMap(ctx context.Context, db *sql.DB, logf func(string, ...any)) error {
+	var found string
+	err := db.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'search_fts_map'`).Scan(&found)
+	if err == nil {
+		return nil
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+
+	if logf != nil {
+		logf("building search index row map (one-time migration, scans the whole search index)")
+	}
+
+	var tempStore int
+	if err := db.QueryRowContext(ctx, `PRAGMA temp_store`).Scan(&tempStore); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA temp_store = FILE`); err != nil {
+		return err
+	}
+	defer db.ExecContext(ctx, fmt.Sprintf(`PRAGMA temp_store = %d`, tempStore))
+
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	defer deleteStmt.Close()
+	defer tx.Rollback()
+	for _, stmt := range []string{createSearchMapSQL, populateSearchMapSQL, createSearchMapIndexSQL} {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("build search index row map: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string][]string, includeTracks bool) error {
+	deleteFTSStmt, err := tx.PrepareContext(ctx, `DELETE FROM search_fts WHERE rowid IN (SELECT fts_rowid FROM search_fts_map WHERE entity_type = ? AND entity_mbid = ?)`)
+	if err != nil {
+		return err
+	}
+	defer deleteFTSStmt.Close()
+	deleteMapStmt, err := tx.PrepareContext(ctx, `DELETE FROM search_fts_map WHERE entity_type = ? AND entity_mbid = ?`)
+	if err != nil {
+		return err
+	}
+	defer deleteMapStmt.Close()
+	insertMapStmt, err := tx.PrepareContext(ctx, `INSERT INTO search_fts_map(entity_type, entity_mbid, fts_rowid) SELECT ?, ?, last_insert_rowid() WHERE changes() > 0`)
+	if err != nil {
+		return err
+	}
+	defer insertMapStmt.Close()
 
 	for _, stage := range searchIndexPopulateStages {
 		if stage.entityType == "track" && !includeTracks {
@@ -299,11 +366,19 @@ func RefreshSearchIndexRows(ctx context.Context, tx *sql.Tx, changed map[string]
 			return fmt.Errorf("refresh search index %s: %w", stage.name, err)
 		}
 		for _, mbid := range mbids {
-			if _, err := deleteStmt.ExecContext(ctx, stage.entityType, mbid); err != nil {
+			if _, err := deleteFTSStmt.ExecContext(ctx, stage.entityType, mbid); err != nil {
+				insertStmt.Close()
+				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
+			}
+			if _, err := deleteMapStmt.ExecContext(ctx, stage.entityType, mbid); err != nil {
 				insertStmt.Close()
 				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
 			}
 			if _, err := insertStmt.ExecContext(ctx, mbid); err != nil {
+				insertStmt.Close()
+				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
+			}
+			if _, err := insertMapStmt.ExecContext(ctx, stage.entityType, mbid); err != nil {
 				insertStmt.Close()
 				return fmt.Errorf("refresh search index %s: %w", stage.name, err)
 			}

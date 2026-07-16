@@ -462,6 +462,9 @@ func TestRefreshSearchIndexRowsUpdatesAndRemoves(t *testing.T) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO search_fts(entity_type, entity_mbid, heading, subtitle, meta, aux) VALUES('artist', 'gone', 'Stale', '', '', '')`); err != nil {
 		t.Fatalf("insert stale row: %v", err)
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO search_fts_map(entity_type, entity_mbid, fts_rowid) VALUES('artist', 'gone', last_insert_rowid())`); err != nil {
+		t.Fatalf("map stale row: %v", err)
+	}
 	changed["artist"] = append(changed["artist"], "gone")
 	if err := RefreshSearchIndexRows(ctx, tx, changed, true); err != nil {
 		t.Fatalf("RefreshSearchIndexRows: %v", err)
